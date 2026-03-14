@@ -106,6 +106,20 @@ class PSROScheduler:
                         ]
                     )
 
+                # Ensure all agents have the same number of policies so
+                # the payoff matrix is square (required by Nash solver).
+                # This can be off-by-one when agents generate policies in turn.
+                min_num_policies = min(
+                    len(ids) for ids in agent_id2policy_ids.values()
+                )
+                for agent_id in list(agent_id2policy_ids.keys()):
+                    agent_id2policy_ids[agent_id] = agent_id2policy_ids[
+                        agent_id
+                    ][:min_num_policies]
+                    agent_id2policy_indices[agent_id] = agent_id2policy_indices[
+                        agent_id
+                    ][:min_num_policies]
+
                 # get payoff matrix
                 payoff_matrix = self.policy_data_manager.get_matrix_data(
                     "payoff", agent_id2policy_indices

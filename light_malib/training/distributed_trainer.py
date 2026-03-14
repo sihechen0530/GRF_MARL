@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import copy
+import sys
 from light_malib.buffer import policy_server
 from light_malib.utils.desc.policy_desc import PolicyDesc
 from light_malib.utils.desc.task_desc import TrainingDesc
@@ -35,11 +36,22 @@ class DistributedPolicyWrapper:
     """
 
     def __init__(self, policy, local_rank):
-        Logger.info(
-            "local_rank: {} cuda_visible_devices:{}".format(
-                local_rank, os.environ["CUDA_VISIBLE_DEVICES"]
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "None")
+        cuda_available = torch.cuda.is_available()
+        cuda_count = torch.cuda.device_count()
+        msg = (
+            "DistributedPolicyWrapper init - local_rank: {}, CUDA_VISIBLE_DEVICES: {}, "
+            "torch.cuda.is_available: {}, torch.cuda.device_count: {}".format(
+                local_rank, cuda_visible, cuda_available, cuda_count
             )
         )
+        Logger.info(msg)
+        # Flush immediately so this appears in logs before any crash on to_device()
+        print(msg, file=sys.stderr, flush=True)
+        sys.stderr.flush()
+
+        # For now we still target cuda:0; this log helps debug cases where
+        # the node advertises GPUs but torch cannot see them.
         self.device = torch.device("cuda:0")
         self.policy = policy.to_device(self.device)
         # maintain a shallow copy of policy, which shares the underlying models with self.policy
@@ -105,7 +117,13 @@ class DistributedTrainer:
         self.local_queue_size = local_queue_size
         self.policy_server = policy_server
 
-        Logger.info("{} (local rank: {}) initialized".format(self.id, local_rank))
+        visible_gpus = os.environ.get("CUDA_VISIBLE_DEVICES", "None")
+        node_ip = ray.get_runtime_context().worker.node_ip_address
+        Logger.info("{} (local rank: {}) initialized on node {} with CUDA_VISIBLE_DEVICES: {}".format(self.id, local_rank, node_ip, visible_gpus))
+
+    def ready(self):
+        """No-op to force actor __init__ to run; used for port-binding retry."""
+        return True
 
     def local_queue_put(self, data):
         if self.gpu_preload:

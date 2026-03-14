@@ -3,6 +3,12 @@ expr_name: full_game_10_vs_10_hard_ippo
 log_dir: ./logs             # log directory
 seed: 0
 eval_only: False            # True if only want evaluation
+slurm_config:
+  num_gpus: 4
+  cpus_per_task: 48
+  memory_gb: 360
+  time_hours: 1
+  partition: "sharing"
 
 distributed:
   use: False
@@ -11,7 +17,7 @@ distributed:
   nodes:
     master:
       ip: "auto"
-    workers:      
+    workers:
       - ip:
 
 framework:
@@ -23,7 +29,7 @@ framework:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 700          #iteration at each psro round
+      max_steps: 5000          #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -32,27 +38,27 @@ evaluation_manager:
   num_eval_rollouts: 1
 
 policy_data_manager:
-  update_func: "gr_football" 
+  update_func: "gr_football"
   fields:
     payoff:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     score:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     win:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     lose:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     my_goal:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     goal_diff:
       type: "matrix"
-      missing_value: -100 
-        
+      missing_value: -100
+
 monitor:
   type: "local"   #'remote': wandb or 'local': tensorboard
   distributed:
@@ -67,10 +73,10 @@ rollout_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
-  num_workers: 60     # numbers of parallel rollout worker, one env per worker by default
+  num_workers: 22     # Increased from 12 to fully utilize all 28 CPUs
   seed: 12345
-  saving_interval: 100 # the frequency of dumping model's weight
-  batch_size: ${rollout_manager.num_workers}
+  saving_interval: 10 # the frequency of dumping model's weight
+  batch_size: ${rollout_manager.num_workers}  # Must match num_workers (22)
   eval_batch_size: 100
   eval_freq: 100 # epochs
   rollout_metric_cfgs:
@@ -123,7 +129,7 @@ training_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
- 
+
   master_addr: "127.0.0.1"
   master_port:  "12774"
   local_queue_size: 1
@@ -133,15 +139,15 @@ training_manager:
     distributed:
       resources:
         num_cpus: 1
-  num_trainers: 1 # equals to number of GPUs by default
+  num_trainers: ${slurm_config.num_gpus}     # Dynamically use SLURM requested GPU count
   # control the frequency of remote parameter update
   update_interval: 1
   gpu_preload: False
   trainer:
     distributed:
       resources:
-        num_cpus: 1
-        num_gpus: 1
+        num_cpus: 2
+        num_gpus: 1     # Use single GPU per trainer
         resources:
           - ["node:${distributed.nodes.master.ip}",0.01]
     optimizer: "Adam"
@@ -215,7 +221,7 @@ populations:
         use_q_head: False
         ppo_epoch: 10
         num_mini_batch: 1  # the number of mini-batches
-        
+
         return_mode: new_gae
         gae:
           gae_lambda: 0.95
@@ -244,7 +250,7 @@ populations:
           init_cfg:
             - condition: "==0" # condition if True in order
               strategy: random # now support pretrained, inherit_last, random
-              policy_id: 
+              policy_id:
               policy_dir:
           initial_policies:
 

@@ -11,6 +11,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 from light_malib.utils.episode import EpisodeKey
 from ..base_env import BaseEnv
 
@@ -65,8 +67,17 @@ class GRFootballEnv(BaseEnv):
         
         register_new_scenarios()
         
+        # Pass a plain dict so gfootball's C++/config gets normal Python types (str paths etc.)
+        try:
+            from omegaconf import OmegaConf
+            env_kwargs = OmegaConf.to_container(scenario_config, resolve=True) if not isinstance(scenario_config, dict) else dict(scenario_config)
+        except Exception:
+            env_kwargs = dict(scenario_config)
+        if "logdir" in env_kwargs and env_kwargs["logdir"] is not None:
+            env_kwargs["logdir"] = os.path.abspath(os.path.expanduser(str(env_kwargs["logdir"])))
+        
         self._env: FootballEnv = gfootball_official_env.create_environment(
-            **scenario_config
+            **env_kwargs
         )
         self.agent_ids = ["agent_0", "agent_1"]
         self.num_players = {
