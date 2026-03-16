@@ -138,7 +138,7 @@ class RolloutManager:
         # TODO use stopper
         try:
             with self.rollout_epoch_lock:
-                self.rollout_epoch = 0
+                self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
@@ -278,7 +278,7 @@ class RolloutManager:
         # TODO use stopper
         try:
             with self.rollout_epoch_lock:
-                self.rollout_epoch = 0
+                self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:

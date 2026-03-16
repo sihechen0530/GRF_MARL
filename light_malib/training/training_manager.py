@@ -38,40 +38,75 @@ class TrainingManager:
         self.policy_server = get_actor(self.id, "PolicyServer")
         self.monitor = get_actor(self.id, "Monitor")
 
-        DistributedTrainer = ray.remote(
-            **get_resources(cfg.trainer.distributed.resources)
-        )(distributed_trainer.DistributedTrainer)
+        # Use only num_cpus/num_gpus for trainer so Ray can schedule it without strict node affinity.
+        # Node affinity can fragment resources and cause "cannot be scheduled" despite enough total resources.
+        trainer_res = get_resources(cfg.trainer.distributed.resources)
+        trainer_res = {k: v for k, v in trainer_res.items() if k in ("num_cpus", "num_gpus")}
+        if not trainer_res:
+            trainer_res = {"num_cpus": 1, "num_gpus": 1}
+        DistributedTrainer = ray.remote(**trainer_res)(distributed_trainer.DistributedTrainer)
         DataPrefetcher = ray.remote(
             **get_resources(cfg.data_prefetcher.distributed.resources)
         )(data_prefetcher.DataPrefetcher)
 
-        if self.cfg.master_port is None:
-            self.cfg.master_port = str(int(np.random.randint(10000, 20000)))
+        max_port_retries = 5
+        for attempt in range(max_port_retries):
+            # Use a random port to avoid EADDRINUSE when multiple jobs share a node or a previous run left the port in use
+            self.cfg.master_port = str(int(np.random.randint(10000, 65535)))
 
-        self.trainers = [
-            DistributedTrainer.options(max_concurrency=10).remote(
-                id=default_trainer_id(idx),
-                local_rank=idx,
-                world_size=self.cfg.num_trainers,  # TODO(jh) check ray resouces if we have so many gpus.
-                master_addr=self.cfg.master_addr,
-                master_port=self.cfg.master_port,
-                master_ifname=self.cfg.get("master_ifname", None),
-                gpu_preload=self.cfg.gpu_preload,  # TODO(jh): debug
-                local_queue_size=self.cfg.local_queue_size,
-                policy_server=self.policy_server,
-            )
-            for idx in range(self.cfg.num_trainers)
-        ]
-        self.prefetchers = [
-            DataPrefetcher.options(max_concurrency=10).remote(
-                self.cfg.data_prefetcher, self.trainers, [self.data_server]
-            )
-            for i in range(self.cfg.num_prefetchers)
-        ]
+            self.trainers = [
+                DistributedTrainer.options(max_concurrency=10).remote(
+                    id=default_trainer_id(idx),
+                    local_rank=idx,
+                    world_size=self.cfg.num_trainers,  # TODO(jh) check ray resouces if we have so many gpus.
+                    master_addr=self.cfg.master_addr,
+                    master_port=self.cfg.master_port,
+                    master_ifname=self.cfg.get("master_ifname", None),
+                    gpu_preload=self.cfg.gpu_preload,  # TODO(jh): debug
+                    local_queue_size=self.cfg.local_queue_size,
+                    policy_server=self.policy_server,
+                )
+                for idx in range(self.cfg.num_trainers)
+            ]
+            self.prefetchers = [
+                DataPrefetcher.options(max_concurrency=10).remote(
+                    self.cfg.data_prefetcher, self.trainers, [self.data_server]
+                )
+                for i in range(self.cfg.num_prefetchers)
+            ]
+            try:
+                ray.get([t.ready.remote() for t in self.trainers])
+                break
+            except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError) as e:
+                err_str = str(e).lower()
+                if "eaddrinuse" in err_str or "address already in use" in err_str:
+                    Logger.warning(
+                        "Port {} in use (attempt {}/{}), retrying with new port...".format(
+                            self.cfg.master_port, attempt + 1, max_port_retries
+                        )
+                    )
+                    for t in self.trainers:
+                        try:
+                            ray.kill(t)
+                        except Exception:
+                            pass
+                    for p in self.prefetchers:
+                        try:
+                            ray.kill(p)
+                        except Exception:
+                            pass
+                    if attempt == max_port_retries - 1:
+                        raise
+                else:
+                    raise
 
         # cannot start two rollout tasks
         self.semaphore = threading.Semaphore(value=1)
-        Logger.info("{} initialized".format(self.id))
+        
+        num_gpus_available = ray.cluster_resources().get("GPU", 0)
+        Logger.info("{} initialized with {} trainers distributed across {} available GPUs in Ray cluster".format(
+            self.id, self.cfg.num_trainers, num_gpus_available
+        ))
 
         self.eq_dist_list = []
         
@@ -229,4 +264,8 @@ class TrainingManager:
         return statistics
 
     def close(self):
-        ray.get([trainer.close.remote() for trainer in self.trainers])
+        for trainer in self.trainers:
+            try:
+                ray.get(trainer.close.remote())
+            except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError) as e:
+                Logger.warning("Trainer close skipped (actor may have died earlier): {}".format(e))

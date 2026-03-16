@@ -3,6 +3,12 @@ expr_name: full_game_11_v_11_hard_mappo
 log_dir: ./logs             # log directory
 seed: 0
 eval_only: False            # True if only want evaluation
+slurm_config:
+  num_gpus: 4
+  cpus_per_task: 48
+  memory_gb: 360
+  time_hours: 1
+  partition: "sharing"
 
 distributed:
   use: False
@@ -23,7 +29,7 @@ framework:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.0
-      max_steps: 700          #iteration at each psro round
+      max_steps: 5000          #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -67,9 +73,9 @@ rollout_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
-  num_workers: 60     # numbers of parallel rollout worker, one env per worker by default
+  num_workers: 22     # numbers of parallel rollout worker, one env per worker by default
   seed: 12345
-  saving_interval: 100 # the frequency of dumping model's weight
+  saving_interval: 10 # the frequency of dumping model's weight
   batch_size: ${rollout_manager.num_workers}
   eval_batch_size: 100
   eval_freq: 100 # epochs
@@ -133,14 +139,14 @@ training_manager:
     distributed:
       resources:
         num_cpus: 1
-  num_trainers: 1 # equals to number of GPUs by default
+  num_trainers: ${slurm_config.num_gpus}
   # control the frequency of remote parameter update
   update_interval: 1
   gpu_preload: False
   trainer:
     distributed:
       resources:
-        num_cpus: 1
+        num_cpus: 2
         num_gpus: 1
         resources:
           - ["node:${distributed.nodes.master.ip}",0.01]

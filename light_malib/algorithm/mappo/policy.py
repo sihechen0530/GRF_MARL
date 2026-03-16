@@ -371,18 +371,18 @@ class MAPPO(Policy):
 
         actor_path = os.path.join(dump_dir, "actor.pt")
         if os.path.exists(actor_path):
-            actor = torch.load(actor_path, res.device)
+            actor = torch.load(actor_path, map_location=res.device, weights_only=False)
             hard_update(res.actor, actor)
             
         critic_path = os.path.join(dump_dir, "critic.pt")
         if os.path.exists(critic_path):
-            critic = torch.load(critic_path, res.device)
+            critic = torch.load(critic_path, map_location=res.device, weights_only=False)
             hard_update(res.critic, critic)
         
         if res.share_backbone:
             backbone_path = os.path.join(dump_dir, "backbone.pt")
             if os.path.exists(backbone_path):
-                backbone = torch.load(backbone_path, res.device)
+                backbone = torch.load(backbone_path, map_location=res.device, weights_only=False)
                 hard_update(res.backbone, backbone)
                 
         return res

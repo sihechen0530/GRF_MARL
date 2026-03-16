@@ -21,9 +21,15 @@ class Solver(MetaSolver):
         self.iterations = 20000
 
     def compute(self, payoff):
-        assert len(payoff.shape) == 2 and np.all(
+        assert (
+            len(payoff.shape) == 2 and payoff.shape[0] == payoff.shape[1]
+        ), (
+            "Payoff matrix must be square, got shape {}. "
+            "Ensure all agents have equal policy counts.".format(payoff.shape)
+        )
+        assert np.all(
             payoff + payoff.T < 1e-6
-        ), "only support two-player zero-sum symetric games now.\n payoff:{}".format(
+        ), "Only supports two-player zero-sum symmetric games.\n payoff:{}".format(
             payoff
         )
         eqs = self.compute_nash(payoff)

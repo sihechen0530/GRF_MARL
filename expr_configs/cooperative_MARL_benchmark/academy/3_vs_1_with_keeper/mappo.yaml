@@ -4,6 +4,14 @@ log_dir: ./logs             #log directory
 seed: 0
 eval_only: False            #True if only want evaluation
 
+slurm_config:
+  num_gpus: 1
+  gpu_type: v100
+  cpus_per_task: 12
+  memory_gb: 90
+  time_hours: 1
+  partition: "sharing"
+
 distributed:
   use: False
   auto_connect:
@@ -67,7 +75,7 @@ rollout_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
-  num_workers: 80     # numbers of parallel rollout worker, one env per worker by default
+  num_workers: 10     # fit within slurm cpus_per_task (12); leave headroom for trainer/coordinators
   seed: 12345
   saving_interval: 100 # the frequency of dumping model's weight
   batch_size: ${rollout_manager.num_workers}

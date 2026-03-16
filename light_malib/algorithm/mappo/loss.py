@@ -132,7 +132,8 @@ class MAPPOLoss(LossFunc):
             param_groups.append({'params': self.policy.critic.parameters(), 'lr': self._params["critic_lr"]})
         
         if self._policy.share_backbone and len(list(self._policy.backbone.parameters()))>0:
-            param_groups.append({'params': self.policy.backbone.parameters(), 'lr': self._params["backbone_lr"]})
+            backbone_lr = self._params.get("backbone_lr", self._params["actor_lr"])
+            param_groups.append({'params': self.policy.backbone.parameters(), 'lr': backbone_lr})
             
         self.optimizer=optim_cls(
             param_groups,
