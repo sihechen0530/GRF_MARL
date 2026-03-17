@@ -62,8 +62,14 @@ def start_cluster():
             )
             ray.shutdown()
             cluster_start_info = ray.init(resources={})
-    except ConnectionError:
-        Logger.warning("No active cluster detected, will create local ray instance.")
+    except (ConnectionError, OSError) as e:
+        # OSError covers socket.gaierror: DNS/hostname resolution issues when trying to
+        # attach to an existing (possibly stale) cluster via address="auto".
+        Logger.warning(
+            "Ray auto-connect failed ({}: {}). Will create local ray instance.".format(
+                type(e).__name__, e
+            )
+        )
         cluster_start_info = ray.init(resources={})
 
     Logger.warning(

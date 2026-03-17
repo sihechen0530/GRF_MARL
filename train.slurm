@@ -40,6 +40,7 @@
 # ============================================================================
 
 set -e  # Exit on error
+set -o pipefail  # Make pipelines fail if python fails (tee would otherwise hide exit code)
 
 # Parse command-line arguments
 CONFIG_PATH=""
