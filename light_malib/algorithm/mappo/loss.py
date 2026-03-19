@@ -12,6 +12,7 @@
 # limitations under the License.
 
 from typing import Union
+import os
 import torch
 from light_malib.utils.episode import EpisodeKey
 from light_malib.algorithm.common.loss_func import LossFunc
@@ -58,18 +59,14 @@ class MAPPOLoss(LossFunc):
         """
         reset should always be called for each training task.
         """
-        self._params.update(config)
-        if policy is not self.policy:
-            self._policy = policy
-            # self._set_centralized_critic()
-            self.setup_optimizers()
-        
+        super().reset(policy, config)
+
         self.clip_param = policy.custom_config.get("clip_param", 0.2)
         self.max_grad_norm = policy.custom_config.get("max_grad_norm", 10)
 
-        self.sub_algorithm_name = policy.custom_config.get("sub_algorithm_name","MAPPO")   
+        self.sub_algorithm_name = policy.custom_config.get("sub_algorithm_name","MAPPO")
         assert self.sub_algorithm_name in ["MAPPO","CoPPO","HAPPO","A2PO"]
-        
+
         if self.sub_algorithm_name in ["IPPO","MAPPO"]:
             self._use_seq=False
             self._use_two_stage=False
@@ -116,7 +113,14 @@ class MAPPOLoss(LossFunc):
             self._use_cum_sequence=True
             self._agent_seq=[]
         else:
-            raise NotImplementedError     
+            raise NotImplementedError
+
+        optimizer_state_dir = self._params.get("optimizer_state_dir")
+        if optimizer_state_dir:
+            opt_path = os.path.join(optimizer_state_dir, "optimizer.pt")
+            if os.path.exists(opt_path):
+                self.optimizer.load_state_dict(torch.load(opt_path, weights_only=False))
+                Logger.warning("Loaded optimizer state from {}".format(opt_path))
             
     def setup_optimizers(self, *args, **kwargs):
         """Accept training configuration and setup optimizers"""
@@ -142,10 +146,14 @@ class MAPPOLoss(LossFunc):
         )
         
         self.optimizer.zero_grad()
-        
+
         self.n_opt_steps=0
         self.grad_accum_step=self._params.get("grad_accum_step",1)
-        
+
+    def dump_optimizer(self, dump_dir):
+        os.makedirs(dump_dir, exist_ok=True)
+        torch.save(self.optimizer.state_dict(), os.path.join(dump_dir, "optimizer.pt"))
+
     def loss_compute(self, sample):
         self.n_opt_steps+=1
         

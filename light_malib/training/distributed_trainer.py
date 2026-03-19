@@ -13,6 +13,9 @@
 
 import copy
 import sys
+import socket
+import struct
+import fcntl
 from light_malib.buffer import policy_server
 from light_malib.utils.desc.policy_desc import PolicyDesc
 from light_malib.utils.desc.task_desc import TrainingDesc
@@ -28,6 +31,33 @@ import queue
 from .data_prefetcher import GPUPreLoadQueueWrapper
 from light_malib.utils.timer import global_timer
 from light_malib.registry import registry
+
+
+def _find_ifname_for_ip(target_ip: str):
+    """Return the network interface name whose IPv4 address matches target_ip."""
+    SIOCGIFADDR = 0x8915
+    try:
+        with open("/proc/net/dev") as f:
+            iface_lines = f.readlines()[2:]
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for line in iface_lines:
+            iface = line.split(":")[0].strip()
+            try:
+                result = fcntl.ioctl(
+                    s.fileno(),
+                    SIOCGIFADDR,
+                    struct.pack("256s", iface.encode()[:15]),
+                )
+                ip = socket.inet_ntoa(result[20:24])
+                if ip == target_ip:
+                    s.close()
+                    return iface
+            except OSError:
+                continue
+        s.close()
+    except Exception:
+        pass
+    return None
 
 
 class DistributedPolicyWrapper:
@@ -106,6 +136,16 @@ class DistributedTrainer:
         if master_ifname is not None:
             # eth0,eth1,etc. See https://pytorch.org/docs/stable/distributed.html.
             os.environ["GLOO_SOCKET_IFNAME"] = master_ifname
+        elif "GLOO_SOCKET_IFNAME" not in os.environ:
+            # Auto-detect IPv4 interface from the node's Ray IP to avoid gloo
+            # defaulting to an IPv6 link-local address (fe80::) which is unroutable.
+            node_ip = ray.get_runtime_context().worker.node_ip_address
+            detected = _find_ifname_for_ip(node_ip)
+            if detected is not None:
+                os.environ["GLOO_SOCKET_IFNAME"] = detected
+                Logger.info("Auto-detected GLOO_SOCKET_IFNAME={} for node IP {}".format(detected, node_ip))
+            else:
+                Logger.warning("Could not auto-detect GLOO_SOCKET_IFNAME for node IP {}; gloo may pick an IPv6 interface".format(node_ip))
         distributed.init_process_group("gloo", rank=local_rank, world_size=world_size)
 
         self.id = id
@@ -151,6 +191,7 @@ class DistributedTrainer:
         self.agent_id = training_desc.agent_id
         self.policy_id = training_desc.policy_id
         self.cfg = training_desc.kwargs["cfg"]
+        optimizer_state_dir = training_desc.kwargs.get("optimizer_state_dir")
         # pull from policy_server
         policy_desc = ray.get(
             self.policy_server.pull.remote(
@@ -164,6 +205,8 @@ class DistributedTrainer:
             registry.TRAINER, policy_desc.policy.registered_name + "Trainer"
         )
         self.trainer = trainer_cls(self.id)
+        if optimizer_state_dir is not None:
+            self.cfg["optimizer_state_dir"] = optimizer_state_dir
         self.trainer.reset(self.policy, self.cfg)
 
         self.local_queue = queue.Queue(self.local_queue_size)
@@ -202,6 +245,11 @@ class DistributedTrainer:
         )
 
         ray.get(self.policy_server.push.remote(self.id, policy_desc))
+
+    def save_optimizer(self, expr_log_dir):
+        loss = self.trainer.loss
+        if loss is not None and hasattr(loss, "dump_optimizer"):
+            loss.dump_optimizer(expr_log_dir)
 
     def dump_policy(self):
         pass

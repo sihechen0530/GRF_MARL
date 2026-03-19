@@ -520,6 +520,12 @@ class RolloutManager:
         if not os.path.exists(dump_dir):
             os.makedirs(dump_dir)
         policy.dump(dump_dir)
+        # Save optimizer state alongside the policy checkpoint so that resuming
+        # from a specific epoch loads the matching optimizer state (not a stale one).
+        try:
+            ray.get(self.traning_manager.save_optimizer.remote(dump_dir))
+        except Exception as e:
+            Logger.warning("Could not save optimizer to {}: {}".format(dump_dir, e))
         Logger.info(
             "Saving model {} {} {} to {}".format(agent_id, policy_id, name, dump_dir)
         )

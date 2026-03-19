@@ -353,6 +353,8 @@ class MAPPO(Policy):
         torch.save(self.critic, os.path.join(dump_dir, "critic.pt"))
         if self.share_backbone:
             torch.save(self.backbone, os.path.join(dump_dir, "backbone.pt"))
+        if self.custom_config.get("use_popart") and hasattr(self, "value_normalizer"):
+            torch.save(self.value_normalizer.state_dict(), os.path.join(dump_dir, "value_normalizer.pt"))
         pickle.dump(self.description, open(os.path.join(dump_dir, "desc.pkl"), "wb"))
 
     @staticmethod
@@ -384,5 +386,12 @@ class MAPPO(Policy):
             if os.path.exists(backbone_path):
                 backbone = torch.load(backbone_path, map_location=res.device, weights_only=False)
                 hard_update(res.backbone, backbone)
-                
+
+        if res.custom_config.get("use_popart") and hasattr(res, "value_normalizer"):
+            vn_path = os.path.join(dump_dir, "value_normalizer.pt")
+            if os.path.exists(vn_path):
+                res.value_normalizer.load_state_dict(
+                    torch.load(vn_path, map_location=res.device, weights_only=False)
+                )
+
         return res

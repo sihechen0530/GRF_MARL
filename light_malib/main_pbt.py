@@ -233,6 +233,10 @@ def main():
                 resume_epoch = int(epoch_match.group(1))
                 cfg.rollout_manager.resume_epoch = resume_epoch
                 Logger.warning(f"Rollout epoch will resume from {resume_epoch}")
+            # Point optimizer loading at the checkpoint dir so we restore the
+            # matching Adam state, not a stale one from a later or unrelated run.
+            cfg.training_manager.optimizer_state_dir = latest_checkpoint_path_for_resume
+            Logger.warning(f"Optimizer state will be loaded from {latest_checkpoint_path_for_resume}")
 
     cfg = convert_to_easydict(cfg)
 

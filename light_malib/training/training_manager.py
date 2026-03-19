@@ -121,8 +121,8 @@ class TrainingManager:
 
         # save distribution
         self.eq_dist_list.append(training_desc.policy_distributions)
-        dump_path = ray.get(self.monitor.get_expr_log_dir.remote())
-        dump_path = os.path.join(dump_path, "eq_dist.pkl")
+        self.expr_log_dir = ray.get(self.monitor.get_expr_log_dir.remote())
+        dump_path = os.path.join(self.expr_log_dir, "eq_dist.pkl")
         with open(dump_path, "wb") as f:
             pickle.dump(self.eq_dist_list, f)
 
@@ -136,6 +136,11 @@ class TrainingManager:
         )
 
         training_desc.kwargs["cfg"] = self.cfg.trainer
+        # Use the checkpoint-specific optimizer dir when resuming; fall back to
+        # expr_log_dir (where the periodic saves also land).
+        training_desc.kwargs["optimizer_state_dir"] = self.cfg.get(
+            "optimizer_state_dir", self.expr_log_dir
+        )
         ray.get([trainer.reset.remote(training_desc) for trainer in self.trainers])
 
         if self.cfg.gpu_preload:
@@ -193,6 +198,7 @@ class TrainingManager:
             if training_steps % self.cfg.update_interval == 0:
                 global_timer.record("push_policy_start")
                 ray.get(self.trainers[0].push_policy.remote(training_steps))
+                ray.get(self.trainers[0].save_optimizer.remote(self.expr_log_dir))
                 global_timer.time("push_policy_start", "push_policy_end", "push_policy")
             global_timer.time("train_step_start", "train_step_end", "train_step")
 
@@ -248,6 +254,9 @@ class TrainingManager:
         Logger.warning("Training ends after {} steps".format(training_steps))
  
         yield True
+
+    def save_optimizer(self, dump_dir):
+        ray.get(self.trainers[0].save_optimizer.remote(dump_dir))
 
     def stop_training(self):
         with self.stop_flag_lock:
