@@ -1,6 +1,7 @@
 # Ray 1.8.0 removed from PyPI; 2.31+ works with this codebase.
 ray>=2.31.0,<3
-omegaconf==2.0.4
+# 2.0.4 rejected by pip>=24.1 (invalid requires: PyYAML>=5.1.*)
+omegaconf>=2.1.0,<3
 grpcio
 grpcio-tools==1.48.2
 protobuf==3.20.0
