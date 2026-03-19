@@ -1,4 +1,5 @@
-ray==1.8.0
+# Ray 1.8.0 removed from PyPI; 2.31+ works with this codebase.
+ray>=2.31.0,<3
 omegaconf==2.0.4
 grpcio
 grpcio-tools==1.48.2
