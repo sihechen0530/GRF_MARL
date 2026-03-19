@@ -13,7 +13,9 @@ tensorboard
 readerwriterlock==1.0.9
 nashpy==0.0.21
 psutil~=5.8.0
-gym==0.21.0
+# gym 0.21.0 fails to build with recent setuptools (invalid extras_require parsing).
+# 0.26.x provides wheels and keeps gym.spaces API used in this repo.
+gym>=0.26.0,<0.29
 dataclasses==0.6
 wrapt==1.12.1
 pyyaml==5.4.1
