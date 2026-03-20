@@ -20,9 +20,9 @@ try:
     from gfootball import env as gfootball_official_env
     from gfootball.env.football_env import FootballEnv
 except ImportError as e:
-    raise e(
-        "Please install Google football evironment before use: https://github.com/google-research/football"
-    ) from None
+    raise ImportError(
+        "Please install Google Research Football before use: https://github.com/google-research/football"
+    ) from e
 
 from .state import State
 from .tools.tracer import MatchTracer

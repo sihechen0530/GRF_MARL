@@ -11,4 +11,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .env import GRFootballEnv as Env
+# Do not import .env here: it requires `gfootball`. Submodules like
+# potential_shaping / reward_state must import without that dependency.
+
+__all__ = ["Env"]
+
+
+def __getattr__(name):
+    if name == "Env":
+        from .env import GRFootballEnv
+
+        return GRFootballEnv
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
