@@ -13,6 +13,9 @@
 
 import numpy as np
 
+from light_malib.envs.gr_football.reward_state import extract_reward_state
+from light_malib.envs.gr_football.potential_shaping import load_phi_callable, resolve_role
+
 
 class Rewarder:
     def __init__(self, reward_config) -> None:
@@ -21,8 +24,56 @@ class Rewarder:
         self.reward_config = reward_config
         self.cumulative_shot_reward = None
 
+        self._ps_cfg = (reward_config or {}).get("potential_shaping") or {}
+        self._ps_enabled = bool(self._ps_cfg.get("enabled", False))
+        self._phi = None
+        self._prev_phi = None
+        self._prev_phi_valid = False
+        self._n_left = 0
+        self._n_right = 0
+        self._alpha = float(self._ps_cfg.get("alpha", 0.05))
+        self._gamma_ps = float(self._ps_cfg.get("gamma", 0.99))
+        self._left_roles = list(self._ps_cfg.get("left_roles", []))
+        self._right_roles = self._ps_cfg.get("right_roles", None)
+        self._right_default = str(self._ps_cfg.get("right_role_default", "default"))
 
-    def calc_reward(self, rew, state):
+        if self._ps_enabled:
+            phi_mod = self._ps_cfg.get("phi_module", "light_malib.envs.gr_football.phi_poc")
+            self._phi = load_phi_callable(phi_mod)
+            if self._ps_cfg.get("validate_on_init", False):
+                from light_malib.envs.gr_football.potential_shaping import validate_phi
+
+                validate_phi(self._phi, np.random.default_rng(0), n_left=4, n_right=2)
+
+    def set_num_players(self, n_left: int, n_right: int) -> None:
+        self._n_left = int(n_left)
+        self._n_right = int(n_right)
+        n = self._n_left + self._n_right
+        self._prev_phi = np.zeros(max(n, 1), dtype=np.float64)
+        self._prev_phi_valid = False
+
+    def begin_episode_potential(self, states) -> None:
+        if not self._ps_enabled or self._phi is None or self._prev_phi is None:
+            return
+        for i, st in enumerate(states):
+            obs = st.obs
+            if obs is None:
+                continue
+            role = resolve_role(
+                i,
+                self._n_left,
+                self._n_right,
+                obs,
+                self._left_roles,
+                self._right_roles,
+                self._right_default,
+            )
+            rs = extract_reward_state(obs, i, self._n_left, self._n_right)
+            self._prev_phi[i] = self._phi(rs, role)
+        self._prev_phi_valid = True
+
+
+    def calc_reward(self, rew, state, player_idx=0):
         """
         'score', 'left_team_active', 'right_team_roles', 'right_team_active',
         'right_team_yellow_card', 'left_team_direction', 'right_team_direction',
@@ -51,6 +102,28 @@ class Rewarder:
             self.reward_config["goal_reward"] * goal_reward(prev_obs, obs)
             + self.reward_config["official_reward"] * rew
         )
+
+        if (
+            self._ps_enabled
+            and self._phi is not None
+            and self._prev_phi_valid
+            and self._prev_phi is not None
+            and 0 <= player_idx < len(self._prev_phi)
+        ):
+            role = resolve_role(
+                player_idx,
+                self._n_left,
+                self._n_right,
+                obs,
+                self._left_roles,
+                self._right_roles,
+                self._right_default,
+            )
+            rs = extract_reward_state(obs, player_idx, self._n_left, self._n_right)
+            phi_curr = float(self._phi(rs, role))
+            shaping = self._gamma_ps * phi_curr - float(self._prev_phi[player_idx])
+            self._prev_phi[player_idx] = phi_curr
+            reward = reward + self._alpha * shaping
 
         return reward
 

@@ -25,7 +25,7 @@ class Rewarder:
         self.defense_r_encoder = defense_r()
         self.default_r_encoder = default_r()
 
-    def calc_reward(self, rew, state):
+    def calc_reward(self, rew, state, player_idx=0):
         """
         'score', 'left_team_active', 'right_team_roles', 'right_team_active',
         'right_team_yellow_card', 'left_team_direction', 'right_team_direction',

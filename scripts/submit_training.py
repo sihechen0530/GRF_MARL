@@ -49,19 +49,47 @@ def get_slurm_config(config_path):
 
     return config
 
-def find_latest_checkpoint(expr_group, expr_name):
-    """Find the latest checkpoint directory for an experiment."""
-    log_base = Path("logs") / expr_group / expr_name
+
+def _log_base_from_training_cfg(cfg):
+    """Same layout as train.slurm auto-resume: <log_dir>/<expr_group>/<expr_name>."""
+    if not cfg:
+        return None
+    log_dir = cfg.get("log_dir", "./logs")
+    if isinstance(log_dir, str):
+        log_dir = log_dir.strip().lstrip("./") or "logs"
+    else:
+        log_dir = "logs"
+    expr_group = cfg.get("expr_group") or "gr_football"
+    expr_name = cfg.get("expr_name")
+    if not expr_name:
+        return None
+    return Path(log_dir) / expr_group / expr_name
+
+
+def find_latest_checkpoint(expr_group, expr_name, log_dir="logs"):
+    """Find the latest run directory (timestamp folder) under logs/<group>/<name>."""
+    log_base = Path(log_dir) / expr_group / expr_name
 
     if not log_base.exists():
         return None
 
-    # Get all subdirectories (which are timestamps)
     checkpoints = sorted([d for d in log_base.iterdir() if d.is_dir()])
 
     if not checkpoints:
         return None
 
+    return str(checkpoints[-1])
+
+
+def find_latest_checkpoint_from_config(config_path):
+    """Resolve latest checkpoint using expr_group / expr_name / log_dir in the yaml."""
+    cfg = load_config_file(config_path)
+    log_base = _log_base_from_training_cfg(cfg)
+    if log_base is None or not log_base.exists():
+        return None
+    checkpoints = sorted([d for d in log_base.iterdir() if d.is_dir()])
+    if not checkpoints:
+        return None
     return str(checkpoints[-1])
 
 def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_submit=False):
@@ -371,43 +399,26 @@ def main():
 
     if args.command == "submit":
         checkpoint = args.checkpoint
-        if args.auto_resume:
-            # Extract experiment info from config path
-            # e.g., expr_configs/cooperative_MARL_benchmark/academy/3_vs_1_with_keeper/ippo.yaml
-            config_parts = Path(args.config).parts
-            if len(config_parts) >= 3:
-                expr_group = config_parts[1]  # cooperative_MARL_benchmark
-                expr_name = "_".join(config_parts[2:-1]) + "_" + config_parts[-1].replace(".yaml", "")
-                # e.g., benchmark_academy_3_vs_1_with_keeper_ippo
-
-                # Try to find the latest checkpoint
-                if "benchmark" in expr_name:
-                    expr_name_part = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-                else:
-                    expr_name_part = expr_name
-
-                checkpoint = find_latest_checkpoint(expr_group, expr_name_part)
-                if checkpoint:
-                    print(f"Found latest checkpoint: {checkpoint}")
+        if args.auto_resume and not checkpoint:
+            checkpoint = find_latest_checkpoint_from_config(args.config)
+            if checkpoint:
+                print(f"Found latest checkpoint: {checkpoint}")
+            else:
+                print("No checkpoint found in yaml log_dir/expr_group/expr_name; starting fresh.")
 
         submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
 
     elif args.command == "resume":
         checkpoint = args.checkpoint
         if not checkpoint:
-            # Try to find latest checkpoint from config info
-            config_parts = Path(args.config).parts
-            if len(config_parts) >= 3:
-                expr_group = config_parts[1]
-                # Construct the experiment name
-                if len(config_parts) >= 4:
-                    expr_name = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-                    checkpoint = find_latest_checkpoint(expr_group, expr_name)
-                    if checkpoint:
-                        print(f"Found latest checkpoint: {checkpoint}")
-                    else:
-                        print(f"No checkpoint found for {expr_group}/{expr_name}")
-                        sys.exit(1)
+            checkpoint = find_latest_checkpoint_from_config(args.config)
+            if checkpoint:
+                print(f"Found latest checkpoint: {checkpoint}")
+            else:
+                cfg = load_config_file(args.config)
+                log_base = _log_base_from_training_cfg(cfg)
+                print(f"No checkpoint found under {log_base}")
+                sys.exit(1)
 
         submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
 

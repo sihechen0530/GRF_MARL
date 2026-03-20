@@ -97,6 +97,12 @@ class GRFootballEnv(BaseEnv):
         else:
             self.rewarder = Rewarder_basic(self.cfg.reward_config)
 
+        if hasattr(self.rewarder, "set_num_players"):
+            self.rewarder.set_num_players(
+                self.num_players["agent_0"],
+                self.num_players["agent_1"],
+            )
+
         self.stats_calculators = {
             "agent_0": StatsCaculator(),
             "agent_1": StatsCaculator(),
@@ -137,6 +143,9 @@ class GRFootballEnv(BaseEnv):
         assert len(observations) == len(self.states)
         for o, s in zip(observations, self.states):
             s.update_obs(o)
+
+        if hasattr(self.rewarder, "begin_episode_potential"):
+            self.rewarder.begin_episode_potential(self.states)
 
         if self.main_agent_id=='agent_0':
             self.tracer.update(observations[0:1])
@@ -318,8 +327,8 @@ class GRFootballEnv(BaseEnv):
     def get_reward(self, rewards):
         rewards = np.array(
             [
-                [self.rewarder.calc_reward(reward, state)]
-                for reward, state in zip(rewards, self.states)
+                [self.rewarder.calc_reward(reward, state, player_idx=i)]
+                for i, (reward, state) in enumerate(zip(rewards, self.states))
             ],
             dtype=float,
         )
