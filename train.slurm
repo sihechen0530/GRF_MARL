@@ -118,7 +118,7 @@ LOG_FILE="logs/training_${SLURM_JOB_ID}.log"
 #   # or: sbatch --export=ALL,CONDA_ENV_NAME=$CONDA_ENV_NAME train.slurm --config ...
 source ~/.bashrc
 set +u
-conda activate "${CONDA_ENV_NAME:-grf_env}"
+conda activate /home/chen.sihe1/.conda/envs/grf_env
 set -u
 
 # Shared conda envs often ship a .pth that adds another user's GRF_MARL to sys.path.
