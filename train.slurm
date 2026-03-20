@@ -40,6 +40,7 @@
 # ============================================================================
 
 set -e  # Exit on error
+set -o pipefail  # python | tee must propagate failure (otherwise job shows SUCCESS on crash)
 
 # Parse command-line arguments
 CONFIG_PATH=""
