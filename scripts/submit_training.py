@@ -20,6 +20,14 @@ DEFAULT_SLURM_CONFIG = {
     "partition": "gpu"        # gpu, gpu-short, gpu-interactive, sharing
 }
 
+
+def _inject_conda_export_for_sbatch(sbatch_cmd):
+    """Forward CONDA_ENV_NAME into the job (train.slurm uses conda activate "${CONDA_ENV_NAME:-grf_env}")."""
+    name = os.environ.get("CONDA_ENV_NAME")
+    if name:
+        sbatch_cmd.insert(1, f"--export=ALL,CONDA_ENV_NAME={name}")
+
+
 def load_config_file(config_path):
     """Load YAML config file and extract slurm_config if available."""
     try:
@@ -109,6 +117,7 @@ def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_subm
         f"--time={time_str}",
         f"--partition={slurm_cfg['partition']}"
     ]
+    _inject_conda_export_for_sbatch(sbatch_cmd)
 
     # Add training arguments
     sbatch_cmd.append(slurm_script)
@@ -235,6 +244,7 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
             f"--time={time_str}",
             f"--partition={slurm_cfg['partition']}"
         ]
+        _inject_conda_export_for_sbatch(sbatch_cmd)
 
         # Add dependency if not first job
         if prev_job_id:

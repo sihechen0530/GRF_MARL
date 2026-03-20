@@ -111,11 +111,13 @@ LOG_FILE="logs/training_${SLURM_JOB_ID}.log"
     echo "=========================================="
 } | tee "$LOG_FILE"
 
-# Activate conda environment (if using conda)
-# Uncomment and modify if using conda
+# Conda: default name grf_env. Use full path if that env lives under another user, e.g.:
+#   export CONDA_ENV_NAME=/home/chen.sihe1/.conda/envs/grf_env
+#   python scripts/submit_training.py submit --config ...   # passes via --export when set
+#   # or: sbatch --export=ALL,CONDA_ENV_NAME=$CONDA_ENV_NAME train.slurm --config ...
 source ~/.bashrc
 set +u
-conda activate grf_env
+conda activate "${CONDA_ENV_NAME:-grf_env}"
 set -u
 
 # Load required modules (adjust for your HPC environment)
