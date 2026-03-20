@@ -1,5 +1,7 @@
 # Copyright 2022 Digital Brain Laboratory, Yan Song and He jiang
 # Licensed under the Apache License, Version 2.0 (the "License");
+from __future__ import annotations
+
 import importlib
 from typing import Any, Callable, List, Optional, Sequence
 
@@ -45,7 +47,7 @@ def resolve_role(
 
 def validate_phi(
     phi_fn: Callable[[dict, str], float],
-    rng: np.random.RandomGenerator,
+    rng: np.random.Generator,
     n_left: int = 4,
     n_right: int = 2,
     n_samples: int = 64,
@@ -69,7 +71,7 @@ def validate_phi(
         raise ValueError("phi appears nearly constant on synthetic states (degenerate)")
 
 
-def _synthetic_obs(rng: np.random.RandomGenerator, n_left: int, n_right: int) -> dict:
+def _synthetic_obs(rng: np.random.Generator, n_left: int, n_right: int) -> dict:
     left = rng.uniform(-1, 1, size=(n_left, 2)).astype(np.float32)
     right = rng.uniform(-1, 1, size=(n_right, 2)).astype(np.float32)
     ball = rng.uniform(-1, 1, size=(3,)).astype(np.float32)
