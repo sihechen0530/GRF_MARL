@@ -121,6 +121,10 @@ set +u
 conda activate "${CONDA_ENV_NAME:-grf_env}"
 set -u
 
+# Shared conda envs often ship a .pth that adds another user's GRF_MARL to sys.path.
+# Put this submission directory first so `import light_malib` always matches this checkout.
+export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+
 # Load required modules (adjust for your HPC environment)
 module load cuda/12.1.1
 # module load cudnn/8.6.0
