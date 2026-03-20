@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Sanity-check a phi module (bounded, non-degenerate on synthetic states)."""
 import argparse
+import sys
+from pathlib import Path
+
+# Running as `python3 scripts/validate_phi_poc.py` puts scripts/ on sys.path, not repo root.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import numpy as np
 
