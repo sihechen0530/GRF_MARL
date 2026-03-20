@@ -30,14 +30,17 @@ def resolve_role(
     bop = int(obs["ball_owned_player"])
 
     if player_idx < n_left:
-        if bot == 0 and bop == player_idx:
+        li = player_idx
+        active_local = int(np.asarray(obs.get("active", li)).reshape(-1)[0])
+        if bot == 0 and bop == active_local:
             return "ball_carrier"
         if not left_roles:
             return "default"
         return str(left_roles[player_idx % len(left_roles)])
 
     ri = player_idx - n_left
-    if bot == 1 and bop == ri:
+    active_local = int(np.asarray(obs.get("active", ri)).reshape(-1)[0])
+    if bot == 1 and bop == active_local:
         return "ball_carrier"
     roles = right_roles if right_roles else []
     if not roles:

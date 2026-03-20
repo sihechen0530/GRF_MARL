@@ -10,6 +10,10 @@ from pathlib import Path
 from datetime import datetime
 import yaml
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Default SLURM configuration
 DEFAULT_SLURM_CONFIG = {
     "num_gpus": 1,
@@ -21,10 +25,19 @@ DEFAULT_SLURM_CONFIG = {
 }
 
 
-def _inject_conda_export_for_sbatch(sbatch_cmd):
-    """Forward CONDA_ENV_NAME into the job (train.slurm uses conda activate "${CONDA_ENV_NAME:-grf_env}")."""
+def _inject_conda_export_for_sbatch(sbatch_cmd, export_mode="all"):
+    """Forward CONDA_ENV_NAME into the job (train.slurm uses conda activate "${CONDA_ENV_NAME:-grf_env}").
+
+    export_mode:
+      all     --export=ALL,CONDA_ENV_NAME=... (default; can be huge on login nodes)
+      minimal --export=NONE,CONDA_ENV_NAME=... (smaller env; job still gets SLURM_* / basic vars from Slurm)
+    """
     name = os.environ.get("CONDA_ENV_NAME")
-    if name:
+    if not name:
+        return
+    if export_mode == "minimal":
+        sbatch_cmd.insert(1, f"--export=NONE,CONDA_ENV_NAME={name}")
+    else:
         sbatch_cmd.insert(1, f"--export=ALL,CONDA_ENV_NAME={name}")
 
 
@@ -92,7 +105,13 @@ def find_latest_checkpoint_from_config(config_path):
         return None
     return str(checkpoints[-1])
 
-def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_submit=False):
+def submit_training_job(
+    config_path,
+    checkpoint_dir=None,
+    job_name=None,
+    no_submit=False,
+    slurm_export="all",
+):
     """Submit a training job using sbatch."""
 
     # Validate config file
@@ -145,7 +164,7 @@ def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_subm
         f"--time={time_str}",
         f"--partition={slurm_cfg['partition']}"
     ]
-    _inject_conda_export_for_sbatch(sbatch_cmd)
+    _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export)
 
     # Add training arguments
     sbatch_cmd.append(slurm_script)
@@ -172,7 +191,11 @@ def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_subm
         print(f"Job submitted successfully. Job ID: {job_id}")
         return job_id
     except subprocess.CalledProcessError as e:
-        print(f"Error submitting job: {e.stderr}")
+        print(f"Error submitting job (exit {e.returncode})")
+        if e.stdout:
+            print("sbatch stdout:", e.stdout)
+        if e.stderr:
+            print("sbatch stderr:", e.stderr)
         sys.exit(1)
 
 def list_checkpoints(expr_group=None, expr_name=None):
@@ -206,7 +229,9 @@ def list_checkpoints(expr_group=None, expr_name=None):
                     if config_file.exists():
                         print(f"{checkpoint_dir}")
 
-def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
+def chain_submit_jobs(
+    config_path, num_jobs=2, job_name=None, no_submit=False, slurm_export="all"
+):
     """Submit a chain of dependent jobs that resume from checkpoints.
 
     Each job depends on the previous one completing, and automatically
@@ -272,7 +297,7 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
             f"--time={time_str}",
             f"--partition={slurm_cfg['partition']}"
         ]
-        _inject_conda_export_for_sbatch(sbatch_cmd)
+        _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export)
 
         # Add dependency if not first job
         if prev_job_id:
@@ -296,7 +321,11 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
                 print(f"  Job {job_num} submitted. Job ID: {job_id}\n")
                 prev_job_id = job_id
             except subprocess.CalledProcessError as e:
-                print(f"Error submitting job {job_num}: {e.stderr}")
+                print(f"Error submitting job {job_num} (exit {e.returncode})")
+                if e.stdout:
+                    print("sbatch stdout:", e.stdout)
+                if e.stderr:
+                    print("sbatch stderr:", e.stderr)
                 sys.exit(1)
 
     # Print summary
@@ -345,6 +374,13 @@ def main():
         "--no-submit", action="store_true",
         help="Print the command without submitting"
     )
+    submit_parser.add_argument(
+        "--slurm-export",
+        choices=("all", "minimal"),
+        default="all",
+        help="Pass CONDA_ENV_NAME into the batch job: 'minimal' uses --export=NONE,... only "
+        "(smaller env; try on login nodes that OOM-kill or reject huge --export=ALL).",
+    )
 
     # Resume command
     resume_parser = subparsers.add_parser("resume", help="Resume a training job from latest checkpoint")
@@ -363,6 +399,12 @@ def main():
     resume_parser.add_argument(
         "--no-submit", action="store_true",
         help="Print the command without submitting"
+    )
+    resume_parser.add_argument(
+        "--slurm-export",
+        choices=("all", "minimal"),
+        default="all",
+        help="Same as submit --slurm-export.",
     )
 
     # List command
@@ -394,6 +436,12 @@ def main():
         "--no-submit", action="store_true",
         help="Print the commands without submitting"
     )
+    chain_parser.add_argument(
+        "--slurm-export",
+        choices=("all", "minimal"),
+        default="all",
+        help="Same as submit --slurm-export.",
+    )
 
     args = parser.parse_args()
 
@@ -406,7 +454,13 @@ def main():
             else:
                 print("No checkpoint found in yaml log_dir/expr_group/expr_name; starting fresh.")
 
-        submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
+        submit_training_job(
+            args.config,
+            checkpoint,
+            args.job_name,
+            args.no_submit,
+            slurm_export=args.slurm_export,
+        )
 
     elif args.command == "resume":
         checkpoint = args.checkpoint
@@ -420,13 +474,25 @@ def main():
                 print(f"No checkpoint found under {log_base}")
                 sys.exit(1)
 
-        submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
+        submit_training_job(
+            args.config,
+            checkpoint,
+            args.job_name,
+            args.no_submit,
+            slurm_export=args.slurm_export,
+        )
 
     elif args.command == "list":
         list_checkpoints(args.group, args.name)
 
     elif args.command == "chain-submit":
-        chain_submit_jobs(args.config, args.num_jobs, args.job_name, args.no_submit)
+        chain_submit_jobs(
+            args.config,
+            args.num_jobs,
+            args.job_name,
+            args.no_submit,
+            slurm_export=args.slurm_export,
+        )
 
 
 if __name__ == "__main__":
