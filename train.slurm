@@ -115,7 +115,7 @@ LOG_FILE="logs/training_${SLURM_JOB_ID}.log"
 # Uncomment and modify if using conda
 source ~/.bashrc
 set +u
-conda activate grf_env
+conda activate /home/chen.sihe1/.conda/envs/grf_env
 set -u
 
 # Load required modules (adjust for your HPC environment)
