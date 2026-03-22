@@ -9,8 +9,6 @@
 #SBATCH --mem=150GB
 #SBATCH --time=8:00:00
 #SBATCH --partition=gpu
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=your_email@university.edu
 
 # ============================================================================
 # SLURM Training Script for Light-MALib Multi-Agent Reinforcement Learning
