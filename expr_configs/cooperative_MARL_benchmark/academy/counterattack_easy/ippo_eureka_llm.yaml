@@ -1,6 +1,5 @@
 expr_group: gr_football
-# Hand-written phi_poc. For LLM-exported generated_phi/phi_llm.py use ippo_eureka_llm.yaml
-expr_name: benchmark_academy_counterattack_easy_ippo_eureka_poc
+expr_name: benchmark_academy_counterattack_easy_ippo_eureka_llm
 log_dir: ./logs             #log directory
 seed: 0
 eval_only: False            #True if only want evaluation
@@ -120,13 +119,12 @@ rollout_manager:
         reward_config:
           goal_reward: 0
           official_reward: 1
-          # Eureka-style PoC: potential-based dense shaping r + alpha * (gamma*Phi(s')-Phi(s))
-          # Swap phi_module to your LLM-exported file (must define phi(state,role)->[0,1]).
+          # LLM-generated Phi (scripts/generate_phi_llm.py -> generated_phi/phi_llm.py)
           potential_shaping:
             enabled: true
             alpha: 0.05
             gamma: 0.99
-            phi_module: light_malib.envs.gr_football.phi_poc
+            phi_module: generated_phi.phi_llm
             validate_on_init: false
             left_roles: [support_wide, support_wide, midfield_support, midfield_support]
             right_role_default: default

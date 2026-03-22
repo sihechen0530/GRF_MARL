@@ -8,7 +8,7 @@
 generated_phi.phi_llm
 ```
 
-Set in yaml:
+Set in yaml (see `expr_configs/.../counterattack_easy/ippo_eureka_llm.yaml`):
 
 ```yaml
 potential_shaping:
