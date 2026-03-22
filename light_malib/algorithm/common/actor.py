@@ -22,13 +22,11 @@ class Actor(RNNNet):
         logits = logits - 1e10 * illegal_action_mask
 
         dist = torch.distributions.Categorical(logits=logits)
+        dist_entropy = dist.entropy()  # always computed; used by EntropyGuidedMask
         if actions is None:
             actions = dist.sample() if explore else dist.probs.argmax(dim=-1)
-            dist_entropy = None
-        else:
-            dist_entropy = dist.entropy()
         action_log_probs = dist.log_prob(actions) # num_action
-        
+
         return actions,  actor_rnn_states, action_log_probs, dist_entropy
 
     def logits(self, obs, rnn_states, masks):

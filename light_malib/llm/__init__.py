@@ -19,6 +19,7 @@ from light_malib.llm.openai_compatible import (
     chat_completions,
     chat_completions_text,
 )
+from light_malib.llm.entropy_mask import EntropyGuidedMask
 
 __all__ = [
     "LLMClientConfig",
@@ -27,4 +28,5 @@ __all__ = [
     "chat_completions_text",
     "extract_python_code_block",
     "ensure_phi_export",
+    "EntropyGuidedMask",
 ]
