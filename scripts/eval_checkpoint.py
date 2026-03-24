@@ -243,8 +243,10 @@ def main():
         print(f"  - {name}: {path}")
 
     if args.output_dir is None:
-        run_name = os.path.basename(args.run_dir) if args.run_dir else "single"
-        args.output_dir = os.path.join("results", f"eval_{run_name}")
+        if args.run_dir:
+            args.output_dir = args.run_dir
+        else:
+            args.output_dir = os.path.dirname(args.checkpoint_dir)
     os.makedirs(args.output_dir, exist_ok=True)
 
     parallel_ckpts = max(1, min(args.parallel_checkpoints, len(checkpoints)))

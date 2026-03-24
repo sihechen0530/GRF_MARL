@@ -41,9 +41,9 @@ def get_slurm_config(config_path):
 
     return config
 
-def find_latest_checkpoint(expr_group, expr_name):
+def find_latest_checkpoint(expr_group, expr_name, log_dir="logs"):
     """Find the latest checkpoint directory for an experiment."""
-    log_base = Path("logs") / expr_group / expr_name
+    log_base = Path(log_dir) / expr_group / expr_name
 
     if not log_base.exists():
         return None
@@ -55,6 +55,56 @@ def find_latest_checkpoint(expr_group, expr_name):
         return None
 
     return str(checkpoints[-1])
+
+
+def get_expr_info(config_path):
+    """Read expr_group, expr_name, and log_dir directly from the config file."""
+    cfg = load_config_file(config_path)
+    expr_group = cfg.get("expr_group", "gr_football")
+    expr_name = cfg.get("expr_name", Path(config_path).stem)
+    log_dir = cfg.get("log_dir", "logs").lstrip("./").rstrip("/") or "logs"
+    return expr_group, expr_name, log_dir
+
+def submit_eval_job(config_path, run_dir=None, depends_on=None, job_name=None, no_submit=False):
+    """Submit an evaluation job, optionally dependent on a training job."""
+    eval_script = "eval.slurm"
+    if not os.path.exists(eval_script):
+        print(f"Error: SLURM eval script not found: {eval_script}")
+        sys.exit(1)
+
+    if job_name is None:
+        config_name = os.path.basename(config_path).replace(".yaml", "")
+        job_name = f"eval_{config_name}"
+
+    sbatch_cmd = [
+        "sbatch",
+        f"--job-name={job_name}",
+    ]
+
+    if depends_on:
+        sbatch_cmd.append(f"--dependency=afterany:{depends_on}")
+
+    sbatch_cmd.append(eval_script)
+    sbatch_cmd.extend(["--config", config_path])
+    if run_dir:
+        sbatch_cmd.extend(["--run-dir", run_dir])
+
+    print(f"Submitting eval job (depends on training job {depends_on})...")
+    print(f"Command: {' '.join(sbatch_cmd)}")
+
+    if no_submit:
+        print("(--no-submit flag set, not submitting)")
+        return None
+
+    try:
+        result = subprocess.run(sbatch_cmd, capture_output=True, text=True, check=True)
+        job_id = result.stdout.strip().split()[-1]
+        print(f"Eval job submitted. Job ID: {job_id}")
+        return job_id
+    except subprocess.CalledProcessError as e:
+        print(f"Error submitting eval job: {e.stderr}")
+        sys.exit(1)
+
 
 def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_submit=False):
     """Submit a training job using sbatch."""
@@ -116,9 +166,9 @@ def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_subm
 
     if checkpoint_dir:
         if not os.path.exists(checkpoint_dir):
-            print(f"Error: Checkpoint directory not found: {checkpoint_dir}")
+            print(f"Error: Resume directory not found: {checkpoint_dir}")
             sys.exit(1)
-        sbatch_cmd.extend(["--checkpoint", checkpoint_dir])
+        sbatch_cmd.extend(["--resume", checkpoint_dir])
         print(f"Submitting training job to resume from: {checkpoint_dir}")
     else:
         print(f"Submitting fresh training job")
@@ -169,7 +219,7 @@ def list_checkpoints(expr_group=None, expr_name=None):
                     if config_file.exists():
                         print(f"{checkpoint_dir}")
 
-def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
+def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, with_eval=True):
     """Submit a chain of dependent jobs that resume from checkpoints.
 
     Each job depends on the previous one completing, and automatically
@@ -181,17 +231,7 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
         print(f"Error: Config file not found: {config_path}")
         sys.exit(1)
 
-    # Extract experiment info from config path
-    config_parts = Path(config_path).parts
-    if len(config_parts) < 3:
-        print("Error: Cannot determine experiment from config path")
-        sys.exit(1)
-
-    expr_group = config_parts[1]
-    if "benchmark" in config_parts[2]:
-        expr_name = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-    else:
-        expr_name = "_".join(config_parts[2:-1]) + "_" + config_parts[-1].replace(".yaml", "")
+    expr_group, expr_name, log_dir = get_expr_info(config_path)
 
     print(f"Chain submitting {num_jobs} dependent jobs")
     print(f"  Experiment: {expr_group}/{expr_name}")
@@ -261,6 +301,13 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
                 print(f"Error submitting job {job_num}: {e.stderr}")
                 sys.exit(1)
 
+    # Submit eval job dependent on last training job
+    if with_eval and job_ids:
+        last_job_id = job_ids[-1] if not no_submit else None
+        eval_name = f"{job_name}_eval" if job_name else "marl_chain_eval"
+        print(f"\nSubmitting eval job after last training job...")
+        submit_eval_job(config_path, None, last_job_id, eval_name, no_submit)
+
     # Print summary
     print("=" * 80)
     print(f"Chain submission complete:")
@@ -268,7 +315,7 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False):
     print(f"  Job IDs: {', '.join(job_ids)}")
     print(f"\nEach job will:")
     print(f"  1. Wait for previous job to complete")
-    print(f"  2. Find latest checkpoint from: logs/{expr_group}/{expr_name}/")
+    print(f"  2. Find latest checkpoint from: {log_dir}/{expr_group}/{expr_name}/")
     print(f"  3. Resume training from that checkpoint")
     print(f"  4. Save new checkpoint on completion")
     print(f"\nMonitor with: squeue -u $USER")
@@ -286,22 +333,26 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Submit command
-    submit_parser = subparsers.add_parser("submit", help="Submit a new training job")
+    submit_parser = subparsers.add_parser("submit", help="Submit a training job, resuming from latest run if one exists")
     submit_parser.add_argument(
         "--config", type=str, required=True,
         help="Path to training config file"
     )
     submit_parser.add_argument(
-        "--checkpoint", type=str, default=None,
-        help="Checkpoint directory to resume from (optional)"
+        "--run-dir", type=str, default=None,
+        help="Specific run directory to resume from"
     )
     submit_parser.add_argument(
-        "--auto-resume", action="store_true",
-        help="Automatically find and resume from latest checkpoint"
+        "--fresh", action="store_true",
+        help="Force a fresh training run, ignoring any existing runs"
     )
     submit_parser.add_argument(
         "--job-name", type=str, default=None,
         help="SLURM job name"
+    )
+    submit_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after training"
     )
     submit_parser.add_argument(
         "--no-submit", action="store_true",
@@ -309,18 +360,22 @@ def main():
     )
 
     # Resume command
-    resume_parser = subparsers.add_parser("resume", help="Resume a training job from latest checkpoint")
+    resume_parser = subparsers.add_parser("resume", help="Resume training from the latest run directory")
     resume_parser.add_argument(
         "--config", type=str, required=True,
         help="Path to training config file"
     )
     resume_parser.add_argument(
-        "--checkpoint", type=str, default=None,
-        help="Specific checkpoint directory (if not specified, uses latest)"
+        "--run-dir", type=str, default=None,
+        help="Specific run directory to resume from (if not specified, uses latest)"
     )
     resume_parser.add_argument(
         "--job-name", type=str, default=None,
         help="SLURM job name"
+    )
+    resume_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after training"
     )
     resume_parser.add_argument(
         "--no-submit", action="store_true",
@@ -353,6 +408,10 @@ def main():
         help="SLURM job name (will be appended with _part1, _part2, etc)"
     )
     chain_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after the last training job"
+    )
+    chain_parser.add_argument(
         "--no-submit", action="store_true",
         help="Print the commands without submitting"
     )
@@ -360,52 +419,40 @@ def main():
     args = parser.parse_args()
 
     if args.command == "submit":
-        checkpoint = args.checkpoint
-        if args.auto_resume:
-            # Extract experiment info from config path
-            # e.g., expr_configs/cooperative_MARL_benchmark/academy/3_vs_1_with_keeper/ippo.yaml
-            config_parts = Path(args.config).parts
-            if len(config_parts) >= 3:
-                expr_group = config_parts[1]  # cooperative_MARL_benchmark
-                expr_name = "_".join(config_parts[2:-1]) + "_" + config_parts[-1].replace(".yaml", "")
-                # e.g., benchmark_academy_3_vs_1_with_keeper_ippo
+        run_dir = args.run_dir
+        if not run_dir and not args.fresh:
+            expr_group, expr_name, log_dir = get_expr_info(args.config)
+            run_dir = find_latest_checkpoint(expr_group, expr_name, log_dir)
+            if run_dir:
+                print(f"Found existing run, resuming: {run_dir}")
+            else:
+                print("No existing run found, starting fresh.")
 
-                # Try to find the latest checkpoint
-                if "benchmark" in expr_name:
-                    expr_name_part = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-                else:
-                    expr_name_part = expr_name
-
-                checkpoint = find_latest_checkpoint(expr_group, expr_name_part)
-                if checkpoint:
-                    print(f"Found latest checkpoint: {checkpoint}")
-
-        submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
+        train_job_id = submit_training_job(args.config, run_dir, args.job_name, args.no_submit)
+        if not args.no_eval:
+            submit_eval_job(args.config, run_dir, train_job_id, args.job_name, args.no_submit)
 
     elif args.command == "resume":
-        checkpoint = args.checkpoint
-        if not checkpoint:
-            # Try to find latest checkpoint from config info
-            config_parts = Path(args.config).parts
-            if len(config_parts) >= 3:
-                expr_group = config_parts[1]
-                # Construct the experiment name
-                if len(config_parts) >= 4:
-                    expr_name = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-                    checkpoint = find_latest_checkpoint(expr_group, expr_name)
-                    if checkpoint:
-                        print(f"Found latest checkpoint: {checkpoint}")
-                    else:
-                        print(f"No checkpoint found for {expr_group}/{expr_name}")
-                        sys.exit(1)
+        run_dir = args.run_dir
+        if not run_dir:
+            expr_group, expr_name, log_dir = get_expr_info(args.config)
+            run_dir = find_latest_checkpoint(expr_group, expr_name, log_dir)
+            if run_dir:
+                print(f"Found latest run: {run_dir}")
+            else:
+                print(f"No run found for {expr_group}/{expr_name} in {log_dir}/")
+                sys.exit(1)
 
-        submit_training_job(args.config, checkpoint, args.job_name, args.no_submit)
+        train_job_id = submit_training_job(args.config, run_dir, args.job_name, args.no_submit)
+        if not args.no_eval:
+            submit_eval_job(args.config, run_dir, train_job_id, args.job_name, args.no_submit)
 
     elif args.command == "list":
         list_checkpoints(args.group, args.name)
 
     elif args.command == "chain-submit":
-        chain_submit_jobs(args.config, args.num_jobs, args.job_name, args.no_submit)
+        chain_submit_jobs(args.config, args.num_jobs, args.job_name, args.no_submit,
+                          with_eval=not args.no_eval)
 
 
 if __name__ == "__main__":
