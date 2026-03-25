@@ -160,6 +160,7 @@ if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "RAY_TMPDIR=$RAY_TMPDIR" | tee -a "$LOG_FILE"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"

@@ -210,7 +210,7 @@ populations:
         use_cuda: False  # enable cuda or not
         use_q_head: False
         ppo_epoch: 10
-        num_mini_batch: 1  # the number of mini-batches
+        num_mini_batch: 4  # the number of mini-batches
         
         return_mode: new_gae
         gae:
