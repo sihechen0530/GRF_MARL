@@ -147,6 +147,7 @@ if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 fi
 export PYTHONUNBUFFERED=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Ray Memory: $RAY_memory bytes"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
