@@ -140,6 +140,8 @@ class RolloutManager:
             with self.rollout_epoch_lock:
                 self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
+            reward = 0.0
+            win = 0.0
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
                 stopper_kwargs = {"step": self.rollout_epoch}
@@ -280,6 +282,8 @@ class RolloutManager:
             with self.rollout_epoch_lock:
                 self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
+            reward = 0.0
+            win = 0.0
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
                 # TODO(jh): ...
