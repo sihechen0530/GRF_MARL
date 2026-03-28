@@ -404,6 +404,8 @@ class MAPPO(Policy):
         if self.share_backbone:
             torch.save(self.backbone, os.path.join(dump_dir, "backbone.pt"))
         pickle.dump(self.description, open(os.path.join(dump_dir, "desc.pkl"), "wb"))
+        if self.entropy_mask is not None:
+            self.entropy_mask.save_cache(os.path.join(dump_dir, "llm_cache.json"))
 
     @staticmethod
     def load(dump_dir, **kwargs):
@@ -434,5 +436,8 @@ class MAPPO(Policy):
             if os.path.exists(backbone_path):
                 backbone = torch.load(backbone_path, map_location=res.device, weights_only=False)
                 hard_update(res.backbone, backbone)
-                
+
+        if res.entropy_mask is not None:
+            res.entropy_mask.load_cache(os.path.join(dump_dir, "llm_cache.json"))
+
         return res
