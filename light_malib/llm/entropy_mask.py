@@ -249,6 +249,59 @@ class EntropyGuidedMask:
         }
 
     # ------------------------------------------------------------------
+    # Cache persistence
+    # ------------------------------------------------------------------
+
+    def save_cache(self, path: str) -> None:
+        """
+        Persist the regime cache to a JSON file.
+
+        Keys are serialised as "game_mode,possession,ball_zone" strings;
+        values are lists of floats.  The file is written atomically via a
+        temp file so a crash mid-write cannot corrupt the checkpoint.
+        """
+        import os, tempfile
+        with self._lock:
+            serialisable = {
+                f"{k[0]},{k[1]},{k[2]}": v.tolist()
+                for k, v in self._cache.items()
+            }
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w") as fh:
+                json.dump(serialisable, fh)
+            os.replace(tmp_path, path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        Logger.info(f"EntropyGuidedMask: saved {len(serialisable)} cache entries to {path}")
+
+    def load_cache(self, path: str) -> None:
+        """
+        Load a previously saved regime cache from *path*.
+
+        Existing in-memory entries are preserved; on-disk entries are merged
+        in (disk wins on collision so that fresher checkpoint data is used).
+        Missing or malformed files are silently ignored.
+        """
+        import os
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as fh:
+                raw = json.load(fh)
+            loaded: dict = {}
+            for key_str, weights_list in raw.items():
+                parts = key_str.split(",")
+                key = (int(parts[0]), int(parts[1]), int(parts[2]))
+                loaded[key] = np.array(weights_list, dtype=np.float32)
+            with self._lock:
+                self._cache.update(loaded)
+            Logger.info(f"EntropyGuidedMask: loaded {len(loaded)} cache entries from {path}")
+        except Exception as exc:
+            Logger.warning(f"EntropyGuidedMask: could not load cache from {path}: {exc}")
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

@@ -1,0 +1,271 @@
+expr_group: gr_football
+expr_name: llm_mask_full_game_11_vs_11_hard_mappo
+seed: 0
+eval_only: False
+
+slurm_config:
+  num_gpus: 1          # LLM masking bottleneck is API calls, not compute
+  gpu_type: v100
+  cpus_per_task: 16    # 10 workers + trainer + coordinator + headroom
+  memory_gb: 120
+  time_hours: 1
+  partition: "sharing"
+
+distributed:
+  use: False
+  auto_connect:
+  auto_copy:
+  nodes:
+    master:
+      ip: "auto"
+    workers:
+      - ip:
+
+framework:
+  name: "psro"
+  max_rounds: 1
+  meta_solver: "nash"
+  sync_training: True
+  stopper:
+    type: "win_rate_stopper"
+    kwargs:
+      min_win_rate: 1.1
+      max_steps: 500           # ~500 epochs per SLURM job; run many jobs sequentially
+
+agent_manager:
+  num_agents: 2
+  share_policies: False
+
+evaluation_manager:
+  num_eval_rollouts: 1
+
+policy_data_manager:
+  update_func: "gr_football"
+  fields:
+    payoff:
+      type: "matrix"
+      missing_value: -100
+    score:
+      type: "matrix"
+      missing_value: -100
+    win:
+      type: "matrix"
+      missing_value: -100
+    lose:
+      type: "matrix"
+      missing_value: -100
+    my_goal:
+      type: "matrix"
+      missing_value: -100
+    goal_diff:
+      type: "matrix"
+      missing_value: -100
+
+monitor:
+  type: "local"
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+
+rollout_manager:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+  num_workers: 10      # fits within cpus_per_task; leave 6 CPUs for trainer/infra
+  seed: 12345
+  saving_interval: 5   # checkpoint frequently — jobs last only 1 hour
+  batch_size: ${rollout_manager.num_workers}
+  eval_batch_size: 100
+  eval_freq: 10        # evaluate every 10 epochs
+  rollout_metric_cfgs:
+    reward:
+      type: "sliding"
+      window_size: 20
+      init_list: [-10000]
+    win:
+      type: "sliding"
+      window_size: 20
+      init_list: [0,0,0,0,0]
+  worker:
+    distributed:
+      resources:
+        num_cpus: 1
+    rollout_length: 3001                # full game episode length
+    eval_rollout_length: 3001
+    sample_length: 0
+    padding_length:
+    rollout_func_name: "rollout_func"
+    episode_mode: "traj"
+    envs:
+      - cls: "gr_football"
+        id_prefix: "gr_footbal"
+        scenario_config:
+          env_name: "benchmark_full_game_11_vs_11_hard"
+          number_of_left_players_agent_controls: 10
+          number_of_right_players_agent_controls: 1
+          representation: "raw"
+          rewards: "scoring,checkpoints"
+          stacked: False
+          logdir: '/tmp/football/malib_psro'
+          write_goal_dumps: False
+          write_full_episode_dumps: False
+          render: False
+          other_config_options:
+            action_set: v2
+        reward_config:
+          goal_reward: 0
+          official_reward: 1
+    credit_reassign:
+    decaying_exploration:
+      init_noise: 0
+      total_epoch_to_zero: 2000
+      interval: 400
+
+training_manager:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+
+  master_addr: "127.0.0.1"
+  master_port:  "12774"
+  local_queue_size: 1
+  batch_size: ${rollout_manager.batch_size}
+  num_prefetchers: 1
+  data_prefetcher:
+    distributed:
+      resources:
+        num_cpus: 1
+  num_trainers: 1
+  update_interval: 1
+  gpu_preload: False
+  trainer:
+    distributed:
+      resources:
+        num_cpus: 1
+        num_gpus: 1
+        resources:
+          - ["node:${distributed.nodes.master.ip}",0.01]
+    optimizer: "Adam"
+    actor_lr: 5.e-4
+    critic_lr: 5.e-4
+    opti_eps: 1.e-5
+    weight_decay: 0.0
+    lr_decay: False
+    lr_decay_epoch: 2000
+
+data_server:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+  table_cfg:
+    capacity: 1000
+    sampler_type: "lumrf"
+    sample_max_usage: 1
+    rate_limiter_cfg:
+      min_size: ${training_manager.batch_size}
+  read_timeout: 1
+
+policy_server:
+  distributed:
+    resources:
+      num_cpus: 1
+      resources:
+        - ["node:${distributed.nodes.master.ip}",0.01]
+
+populations:
+  - population_id: default
+    algorithm:
+      name: "MAPPO"
+      model_config:
+        model: "gr_football.basic_centralized_critic_pool_obs"
+        initialization:
+          use_orthogonal: True
+          gain: 1.
+        actor:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+        critic:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+
+      custom_config:
+        FE_cfg:
+          num_players: 22
+        sub_algorithm_name: MAPPO
+        num_agents: 10
+        other_clip_param: 0.125
+
+        gamma: 0.995
+        use_cuda: False
+        use_q_head: False
+        ppo_epoch: 10
+        num_mini_batch: 1
+
+        return_mode: new_gae
+        gae:
+          gae_lambda: 0.95
+        vtrace:
+          clip_rho_threshold: 1.0
+          clip_pg_rho_threshold: 100.0
+
+        use_rnn: False
+        rnn_layer_num: 1
+        rnn_data_chunk_length: 16
+
+        use_feature_normalization: True
+        use_popart: True
+        popart_beta: 0.99999
+
+        entropy_coef: 0.00
+        clip_param: 0.2
+
+        # LLM-guided entropy masking
+        use_llm_mask: True
+        llm_mask_high_thresh: 0.7   # activate when entropy > 0.7 * ln(n_actions)
+        llm_mask_low_thresh: 0.3    # deactivate when entropy < 0.3 * ln(n_actions)
+        llm_mask_penalty_scale: 3.0 # logit subtraction strength for LLM-penalized actions
+        llm_mask_num_samples: 3     # parallel LLM calls per regime; results are averaged
+        llm_mask_sample_temperature: 0.4
+
+      policy_init_cfg:
+        agent_0:
+          new_policy_ctr_start: -1
+          init_cfg:
+            - condition: "==0"
+              strategy: random
+              policy_id:
+              policy_dir:
+          initial_policies:
+
+        agent_1:
+          new_policy_ctr_start: -1
+          init_cfg:
+            - condition: "==0"
+              strategy: pretrained
+              policy_id: built_in
+              policy_dir: light_malib/trained_models/gr_football/5_vs_5/built_in
+          initial_policies:
