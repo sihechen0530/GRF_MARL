@@ -132,6 +132,7 @@ class EntropyGuidedMask:
         self._current_regime: Optional[Tuple] = None
         # Weights currently applied (scaled by penalty_scale at apply time)
         self._current_weights: np.ndarray = np.zeros(n_actions, dtype=np.float32)
+        self._step_count: int = 0           # total step() calls, for periodic logging
 
     # ------------------------------------------------------------------
     # Pickle support (threading.Lock is not picklable; Ray serializes
@@ -175,6 +176,14 @@ class EntropyGuidedMask:
         entropy : scalar entropy of the action distribution at this step
         regime  : dict from extract_regime()
         """
+        self._step_count += 1
+        if self._step_count % 500 == 1:  # log step 1, 501, 1001, ...
+            Logger.info(
+                f"EntropyGuidedMask: step={self._step_count} entropy={entropy:.4f} "
+                f"high_thresh={self.high_thresh:.4f} low_thresh={self.low_thresh:.4f} "
+                f"active={self._active} cache_size={len(self._cache)}"
+            )
+
         # Hysteresis: activate on high entropy, deactivate on low
         if not self._active and entropy > self.high_thresh:
             self._active = True

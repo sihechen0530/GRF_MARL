@@ -140,6 +140,8 @@ class RolloutManager:
             with self.rollout_epoch_lock:
                 self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
+            reward, win = -np.inf, 0.0  # defaults in case the loop exits before the first eval
+            rollout_epoch = self.rollout_epoch  # default in case stopper fires before first iteration
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
                 stopper_kwargs = {"step": self.rollout_epoch}
@@ -519,6 +521,24 @@ class RolloutManager:
         dump_dir = os.path.join(self.expr_log_dir, agent_id, policy_id, name)
         if not os.path.exists(dump_dir):
             os.makedirs(dump_dir)
+        # Merge LLM regime caches from all rollout workers into the policy before
+        # dumping. Workers run inference and populate their local cache; the
+        # training-side policy pulled from the PolicyServer never does, so its cache
+        # would otherwise always be empty when checkpointed.
+        if getattr(policy, "entropy_mask", None) is not None:
+            cache_futures = [
+                w.get_llm_cache.remote(agent_id, policy_id)
+                for w in self.rollout_workers
+            ]
+            for worker_cache in ray.get(cache_futures):
+                for key, weights_list in worker_cache.items():
+                    if key not in policy.entropy_mask._cache:
+                        policy.entropy_mask._cache[key] = np.array(
+                            weights_list, dtype=np.float32
+                        )
+            Logger.info(
+                f"Merged LLM cache before save: {len(policy.entropy_mask._cache)} entries"
+            )
         policy.dump(dump_dir)
         Logger.info(
             "Saving model {} {} {} to {}".format(agent_id, policy_id, name, dump_dir)
