@@ -22,6 +22,9 @@ Usage:
                benchmark_academy_counterattack_easy_ippo_eureka_llm "LLM" \
         --title "counterattack_easy × IPPO (training)" \
         --output results/compare_ce_ippo_training.png
+
+    # Cap x-axis range when one run has many more eval checkpoints than others
+    python scripts/compare_eval.py --csv ... --max_epoch 1500 --title "..." --output ...
 """
 
 import argparse
@@ -123,6 +126,14 @@ def read_tb_win_rate(log_dir, expr_name):
     return rows
 
 
+def truncate_series(rows, max_epoch):
+    """Keep only points with epoch <= max_epoch (inclusive)."""
+    if max_epoch is None:
+        return rows
+    out = [r for r in rows if r["epoch"] <= max_epoch]
+    return out
+
+
 def plot_comparison(series_list, title, output_path, ylabel="Win Rate", metric="win_rate", ci_key="win_ci"):
     fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -174,6 +185,9 @@ def main():
     parser.add_argument("--metric", type=str, default="win_rate",
                         choices=["win_rate", "reward_mean", "goal_mean"],
                         help="Which metric to plot (default: win_rate)")
+    parser.add_argument("--max_epoch", type=float, default=None,
+                        help="Only plot points with epoch <= this value (all series). "
+                             "Useful when one run has many more checkpoints than others.")
     args = parser.parse_args()
 
     series = []
@@ -185,7 +199,12 @@ def main():
                 print(f"[ERROR] CSV not found: {csv_path}")
                 sys.exit(1)
             rows = read_eval_csv(csv_path)
-            print(f"  Loaded {csv_path}: {len(rows)} epoch data points")
+            n_raw = len(rows)
+            rows = truncate_series(rows, args.max_epoch)
+            if args.max_epoch is not None:
+                print(f"  Loaded {csv_path}: {n_raw} epoch data points (after --max_epoch {args.max_epoch}: {len(rows)})")
+            else:
+                print(f"  Loaded {csv_path}: {len(rows)} epoch data points")
             series.append((label, rows))
 
     if args.expr:
@@ -195,7 +214,12 @@ def main():
         pairs = parse_pairs(args.expr)
         for expr_name, label in pairs:
             rows = read_tb_win_rate(args.tb, expr_name)
-            print(f"  Loaded TB {expr_name}: {len(rows)} data points")
+            n_raw = len(rows)
+            rows = truncate_series(rows, args.max_epoch)
+            if args.max_epoch is not None:
+                print(f"  Loaded TB {expr_name}: {n_raw} data points (after --max_epoch {args.max_epoch}: {len(rows)})")
+            else:
+                print(f"  Loaded TB {expr_name}: {len(rows)} data points")
             series.append((label, rows))
 
     if not series:
