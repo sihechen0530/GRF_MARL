@@ -215,13 +215,15 @@ def main():
                                 pass
 
                     latest_policy_path = None
-                    # Prioritize .last
-                    last_dirs = [p for p in policy_dirs if p.endswith(".last")]
-                    if last_dirs:
-                        latest_policy_path = last_dirs[0]
-                    # If no .last, try highest epoch numbers
-                    elif epoch_dirs:
-                        # Sort by highest epoch num
+                    # Parse epoch numbers from .last dirs (named like "500.last")
+                    for p in policy_dirs:
+                        name = os.path.basename(p)
+                        if name.endswith(".last"):
+                            m = re.search(r"(\d+)", name)
+                            if m:
+                                epoch_dirs.append((int(m.group(1)), p))
+                    # Pick the checkpoint with the highest epoch number
+                    if epoch_dirs:
                         epoch_dirs.sort(key=lambda x: x[0], reverse=True)
                         latest_policy_path = epoch_dirs[0][1]
                     # Fallback to .best
