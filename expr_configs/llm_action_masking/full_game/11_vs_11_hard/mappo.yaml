@@ -4,10 +4,9 @@ seed: 0
 eval_only: False
 
 slurm_config:
-  num_gpus: 1          # LLM masking bottleneck is API calls, not compute
-  gpu_type: v100
-  cpus_per_task: 16    # 10 workers + trainer + coordinator + headroom
-  memory_gb: 120
+  num_gpus: 1
+  cpus_per_task: 32    # 22 workers + trainer + ray infra headroom
+  memory_gb: 100
   time_hours: 1
   partition: "sharing"
 
@@ -75,12 +74,12 @@ rollout_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
-  num_workers: 10      # fits within cpus_per_task; leave 6 CPUs for trainer/infra
+  num_workers: 22
   seed: 12345
   saving_interval: 5   # checkpoint frequently — jobs last only 1 hour
   batch_size: ${rollout_manager.num_workers}
   eval_batch_size: 100
-  eval_freq: 10        # evaluate every 10 epochs
+  eval_freq: 100
   rollout_metric_cfgs:
     reward:
       type: "sliding"

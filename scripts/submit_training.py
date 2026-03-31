@@ -158,7 +158,6 @@ def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_subm
         f"--mem={slurm_cfg['memory_gb']}G",
         f"--time={time_str}",
         f"--partition={slurm_cfg['partition']}",
-        "--exclusive",  # prevent node sharing; avoids Ray cluster conflicts between concurrent jobs
     ]
 
     # Add training arguments
@@ -275,7 +274,6 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, w
             f"--mem={slurm_cfg['memory_gb']}G",
             f"--time={time_str}",
             f"--partition={slurm_cfg['partition']}",
-            "--exclusive",  # prevent node sharing; avoids Ray cluster conflicts between concurrent jobs
         ]
 
         # Add dependency if not first job

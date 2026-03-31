@@ -68,11 +68,10 @@ def start_cluster(use_distributed: bool = False):
             cluster_start_info = ray.init(resources={})
     else:
         # Local (single-node / SLURM) mode: always start a fresh cluster.
-        # Attempting address="auto" here is dangerous: a stale Redis from a previous
-        # job on the same node can be found, but its raylet socket no longer exists,
-        # causing an uncatchable C++ abort inside ray.init().
+        # Use a random port to avoid collisions with other jobs sharing the same node
+        # (port 6379 is Ray's default and would be claimed by the first job).
         ray.shutdown()
-        cluster_start_info = ray.init(resources={})
+        cluster_start_info = ray.init(resources={}, port=0)
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)
