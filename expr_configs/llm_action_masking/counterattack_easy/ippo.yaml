@@ -1,6 +1,5 @@
 expr_group: gr_football
-expr_name: benchmark_academy_3_vs_1_with_keeper_mat
-log_dir: ./logs             #log directory
+expr_name: llm_mask_academy_counterattack_easy_ippo
 seed: 0
 eval_only: False            #True if only want evaluation
 
@@ -19,19 +18,19 @@ distributed:
   nodes:
     master:
       ip: "auto"
-    workers:      
+    workers:
       - ip:
 
 framework:
   name: "psro"                #framework name
   max_rounds: 1         #psro rounds
   meta_solver: "nash"         #'nash', 'uniform', 'pfsp'
-  sync_training: True        # TODO[jh]: on_policy, sync_off_policy, async_off_policy
+  sync_training: True   # TODO[jh]: on_policy, sync_off_policy, async_off_policy
   stopper:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 500          #iteration at each psro round
+      max_steps: 1100          #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -40,27 +39,27 @@ evaluation_manager:
   num_eval_rollouts: 1
 
 policy_data_manager:
-  update_func: "gr_football" 
+  update_func: "gr_football"
   fields:
     payoff:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     score:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     win:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     lose:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     my_goal:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     goal_diff:
       type: "matrix"
-      missing_value: -100 
-        
+      missing_value: -100
+
 monitor:
   type: "local"   #'remote': wandb or 'local': tensorboard
   distributed:
@@ -77,7 +76,7 @@ rollout_manager:
         - ["node:${distributed.nodes.master.ip}",0.01]
   num_workers: 10     # fit within slurm cpus_per_task (12); leave headroom for trainer/coordinators
   seed: 12345
-  saving_interval: 100 # the frequency of dumping model's weight
+  saving_interval: 50 # the frequency of dumping model's weight
   batch_size: ${rollout_manager.num_workers}
   eval_batch_size: 100
   eval_freq: 50 # epochs
@@ -96,7 +95,7 @@ rollout_manager:
         num_cpus: 1
     rollout_length: 400                                    #episode length
     eval_rollout_length: 400
-    sample_length: 0                                     #every $sample_length traj will be push to buffer during rollout, sample length 0 means push when done
+    sample_length: 0                                     #every $sample_length traj will be push to buffer during rollout
     padding_length: # of not use in gr_football
     rollout_func_name: "rollout_func"
     episode_mode: "traj"
@@ -104,8 +103,8 @@ rollout_manager:
       - cls: "gr_football"
         id_prefix: "gr_footbal"
         scenario_config:
-          env_name: "benchmark_academy_3_vs_1_with_keeper"
-          number_of_left_players_agent_controls: 3
+          env_name: "benchmark_academy_counterattack_easy"
+          number_of_left_players_agent_controls: 10
           number_of_right_players_agent_controls: 1
           representation: "raw"
           rewards: "scoring,checkpoints"
@@ -131,11 +130,11 @@ training_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
- 
+
   master_addr: "127.0.0.1"
   master_port:  "12774"
   local_queue_size: 1
-  batch_size: ${rollout_manager.num_workers}
+  batch_size: ${rollout_manager.batch_size} # how many data sample from DatasetServer per time.
   num_prefetchers: 1
   data_prefetcher:
     distributed:
@@ -155,7 +154,6 @@ training_manager:
     optimizer: "Adam"
     actor_lr: 5.e-4
     critic_lr: 5.e-4
-    backbone_lr: 5.e-4
     opti_eps: 1.e-5
     weight_decay: 0.0
     lr_decay: False            #update_linear_schedule
@@ -188,31 +186,43 @@ populations:
     algorithm:
       name: "MAPPO"
       model_config:
-        model: "gr_football.basic_mat"       # model type
-        backbone:
-          num_agents: 3 # number of training agents
-          embed_dim: 100
-          num_blocks: 1
-          num_heads: 1
-          encode_state: False
-        actor:
-          dec_actor: False
-          share_actor: False
-        critic:
+        model: "gr_football.basic"       # model type
         initialization:
           use_orthogonal: True
           gain: 1.
+        actor:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+        critic:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
 
       # set hyper parameter
       custom_config:
         FE_cfg:
-          num_players: 6    #config sent to the Feature Encoder
-        gamma: 0.99
+          num_players: 22    #config sent to the Feature Encoder
+        gamma: 0.995
         use_cuda: False  # enable cuda or not
         use_q_head: False
-        ppo_epoch: 15
-        num_mini_batch: 4  # the number of mini-batches
-        
+        ppo_epoch: 10
+        num_mini_batch: 1  # the number of mini-batches
+
         return_mode: new_gae
         gae:
           gae_lambda: 0.95
@@ -229,12 +239,19 @@ populations:
         use_popart: True
         popart_beta: 0.99999
 
-        entropy_coef: 0.0
+        entropy_coef: 0.00
         clip_param: 0.2
-        max_grad_norm: 10
         # kl_early_stop: 0.01
 
         use_modified_mappo: False
+
+        # LLM-guided entropy masking
+        use_llm_mask: True
+        llm_mask_high_thresh: 0.7   # activate when entropy > 0.7 * ln(n_actions)
+        llm_mask_low_thresh: 0.3    # deactivate when entropy < 0.3 * ln(n_actions)
+        llm_mask_penalty_scale: 3.0 # logit subtraction strength for LLM-penalized actions
+        llm_mask_num_samples: 3     # parallel LLM calls per regime; results are averaged
+        llm_mask_sample_temperature: 0.4 # temperature for diversity across samples
 
       policy_init_cfg:
         agent_0: # agent_id
@@ -242,7 +259,7 @@ populations:
           init_cfg:
             - condition: "==0" # condition if True in order
               strategy: random # now support pretrained, inherit_last, random
-              policy_id: 
+              policy_id:
               policy_dir:
           initial_policies:
 
@@ -251,6 +268,6 @@ populations:
           init_cfg:
             - condition: "==0" # condition if True in order
               strategy: pretrained # now support pretrained, inherit_last, random
-              policy_id: built_in_5
-              policy_dir: light_malib/trained_models/gr_football/5_vs_5/built_in
+              policy_id: built_in_11
+              policy_dir: light_malib/trained_models/gr_football/11_vs_11/built_in
           initial_policies:                         #initial population

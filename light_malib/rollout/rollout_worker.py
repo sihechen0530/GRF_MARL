@@ -110,6 +110,21 @@ class RolloutWorker:
         rollout_desc.policy_distributions = new_policy_distributions
         return rollout_desc
 
+    def get_llm_cache(self, agent_id, policy_id):
+        """Return this worker's LLM regime cache for the given policy as a plain dict.
+
+        Keys are (game_mode, possession, ball_zone) tuples; values are float lists.
+        Returns an empty dict if the policy has no entropy mask or no cache entries.
+        """
+        policy_data = self.agents[agent_id].policy_data.get(policy_id)
+        if policy_data is None:
+            return {}
+        policy = policy_data.policy
+        if getattr(policy, "entropy_mask", None) is None:
+            return {}
+        with policy.entropy_mask._lock:
+            return {k: v.tolist() for k, v in policy.entropy_mask._cache.items()}
+
     def get_policies(self, policy_ids):
         policies = OrderedDict()
         for agent_id, policy_id in policy_ids.items():

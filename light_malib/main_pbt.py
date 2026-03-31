@@ -32,10 +32,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument(
-        "--resume-from",
+        "--expr-log-dir",
         type=str,
         default=None,
-        help="Path to checkpoint directory to resume training from"
+        help="Experiment output directory. If it already exists, training resumes from the latest checkpoint inside it; otherwise a new run is started."
     )
     args = parser.parse_args()
     return args
@@ -48,22 +48,30 @@ def get_local_ip_address():
     return ip_address
 
 
-def start_cluster():
-    try:
-        cluster_start_info = ray.init(address="auto")
-        # If we connected to an existing cluster but it has no free resources (e.g. leftover
-        # from another job), start a fresh local cluster so this job can schedule its actors.
-        available = ray.available_resources()
-        free_cpu = available.get("CPU", 0)
-        if free_cpu == 0:
-            Logger.warning(
-                "Connected to existing cluster but no CPU available (all resources claimed). "
-                "Starting a fresh local Ray cluster for this job."
-            )
+def start_cluster(use_distributed: bool = False):
+    if use_distributed:
+        # Multi-node mode: connect to a pre-started Ray cluster.
+        try:
+            cluster_start_info = ray.init(address="auto")
+            available = ray.available_resources()
+            free_cpu = available.get("CPU", 0)
+            if free_cpu == 0:
+                Logger.warning(
+                    "Connected to existing cluster but no CPU available (all resources claimed). "
+                    "Starting a fresh local Ray cluster for this job."
+                )
+                ray.shutdown()
+                cluster_start_info = ray.init(resources={})
+        except Exception:
+            Logger.warning("No active cluster detected, will create local ray instance.")
             ray.shutdown()
             cluster_start_info = ray.init(resources={})
-    except ConnectionError:
-        Logger.warning("No active cluster detected, will create local ray instance.")
+    else:
+        # Local (single-node / SLURM) mode: always start a fresh cluster.
+        # Attempting address="auto" here is dangerous: a stale Redis from a previous
+        # job on the same node can be found, but its raylet socket no longer exists,
+        # causing an uncatchable C++ abort inside ray.init().
+        ray.shutdown()
         cluster_start_info = ray.init(resources={})
 
     Logger.warning(
@@ -83,7 +91,7 @@ def main():
     set_random_seed(cfg.seed)
 
     assert cfg.distributed.nodes.master.ip is not None
-    cluster_start_info = start_cluster()
+    cluster_start_info = start_cluster(use_distributed=cfg.distributed.get("use", False))
 
     if cfg.distributed.nodes.master.ip == "auto":
         # ip = get_local_ip_address()
@@ -110,22 +118,19 @@ def main():
         assert cfg.training_manager.batch_size==cfg.rollout_manager.batch_size
         assert cfg.rollout_manager.worker.sample_length<=0
 
-    # Handle checkpoint resumption
-    if args.resume_from is not None:
-        # Resume from existing checkpoint
-        if not os.path.exists(args.resume_from):
-            raise FileNotFoundError(f"Checkpoint directory not found: {args.resume_from}")
-        cfg.expr_log_dir = os.path.abspath(args.resume_from)
-        Logger.warning(f"Resuming training from checkpoint: {cfg.expr_log_dir}")
-        resume_from_checkpoint = True
+    # Determine experiment output directory
+    if args.expr_log_dir:
+        cfg.expr_log_dir = os.path.abspath(args.expr_log_dir)
     else:
-        # Create new training run with timestamp
+        log_dir = getattr(cfg, "log_dir", None) or "logs"
         timestamp = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
-        cfg.expr_log_dir = os.path.join(
-            cfg.log_dir, cfg.expr_group, cfg.expr_name, timestamp
-        )
-        cfg.expr_log_dir = os.path.join(BASE_DIR, cfg.expr_log_dir)
-        resume_from_checkpoint = False
+        cfg.expr_log_dir = os.path.join(BASE_DIR, log_dir, cfg.expr_group, cfg.expr_name, timestamp)
+
+    resume_from_checkpoint = os.path.exists(cfg.expr_log_dir)
+    if resume_from_checkpoint:
+        Logger.warning(f"Output directory exists, resuming training: {cfg.expr_log_dir}")
+    else:
+        Logger.warning(f"Starting fresh training run: {cfg.expr_log_dir}")
 
     os.makedirs(cfg.expr_log_dir, exist_ok=True)
 
@@ -154,7 +159,7 @@ def main():
                     # E.g., agent_0 / agent_0-default-1
                     # Assuming default population "default-1" per the provided structure
                     policy_parent_dir = os.path.join(
-                        args.resume_from, agent_id, f"{agent_id}-default-1"
+                        cfg.expr_log_dir, agent_id, f"{agent_id}-default-1"
                     )
                     if not os.path.exists(policy_parent_dir):
                         # No checkpoint folder for this agent; skip and let it train from scratch.
@@ -181,13 +186,15 @@ def main():
                                 pass
 
                     latest_policy_path = None
-                    # Prioritize .last
-                    last_dirs = [p for p in policy_dirs if p.endswith(".last")]
-                    if last_dirs:
-                        latest_policy_path = last_dirs[0]
-                    # If no .last, try highest epoch numbers
-                    elif epoch_dirs:
-                        # Sort by highest epoch num
+                    # Parse epoch numbers from .last dirs (named like "500.last")
+                    for p in policy_dirs:
+                        name = os.path.basename(p)
+                        if name.endswith(".last"):
+                            m = re.search(r"(\d+)", name)
+                            if m:
+                                epoch_dirs.append((int(m.group(1)), p))
+                    # Pick the checkpoint with the highest epoch number
+                    if epoch_dirs:
                         epoch_dirs.sort(key=lambda x: x[0], reverse=True)
                         latest_policy_path = epoch_dirs[0][1]
                     # Fallback to .best

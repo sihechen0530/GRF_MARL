@@ -244,7 +244,10 @@ def rollout_func(
     for agent_id, (policy_id, policy) in behavior_policies.items():
         feature_encoders[agent_id] = policy.feature_encoder
         policy_ids[agent_id] = policy_id
-        policy.eval()
+        if eval:
+            policy.eval()   # disables LLM mask for clean win-rate measurement
+        else:
+            policy.train()  # enables LLM mask during training rollouts
 
     custom_reset_config = {
         "feature_encoders": feature_encoders,

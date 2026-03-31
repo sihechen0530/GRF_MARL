@@ -3,35 +3,26 @@
 Analyze training logs from TensorBoard event files.
 
 Discovers all runs for a given experiment, extracts metrics (win rate, reward,
-etc.), aggregates across runs, exports to CSV, and generates plots with
-mean ± std shading.
+etc.), aggregates across runs, exports to CSV (aggregated + raw), and generates
+one PNG per metric.
 
 Usage:
-    # Analyze all MAPPO 3v1 runs
     python scripts/analyze_training.py --log_dir logs/gr_football \
         --expr_name benchmark_academy_3_vs_1_with_keeper_mappo
 
-    # Specify output directory
     python scripts/analyze_training.py --log_dir logs/gr_football \
         --expr_name benchmark_academy_3_vs_1_with_keeper_mappo \
         --output_dir results/3v1_mappo
 
-    # Filter specific metrics
     python scripts/analyze_training.py --log_dir logs/gr_football \
         --expr_name benchmark_academy_3_vs_1_with_keeper_mappo \
         --metrics win reward score
-
-    # Use global_step as x-axis instead of rollout epoch
-    python scripts/analyze_training.py --log_dir logs/gr_football \
-        --expr_name benchmark_academy_3_vs_1_with_keeper_mappo \
-        --x_axis global_step
 """
 
 import argparse
 import os
 import sys
 import glob
-import re
 from collections import defaultdict
 
 import numpy as np
@@ -80,7 +71,6 @@ def find_event_files(run_dir):
 def parse_tb_events(event_files, metric_filter=None):
     """
     Parse TensorBoard event files and extract scalar data.
-
     Returns a dict: {tag: [(wall_time, step, value), ...]}
     """
     try:
@@ -91,8 +81,11 @@ def parse_tb_events(event_files, metric_filter=None):
 
     all_scalars = defaultdict(list)
 
-    for event_file in event_files:
-        event_dir = os.path.dirname(event_file)
+    # Deduplicate by directory: EventAccumulator loads all event files in a
+    # directory at once, so passing the same directory multiple times wastes time.
+    unique_dirs = list(dict.fromkeys(os.path.dirname(f) for f in event_files))
+
+    for event_dir in unique_dirs:
         ea = EventAccumulator(event_dir)
         ea.Reload()
 
@@ -111,7 +104,7 @@ def parse_tb_events(event_files, metric_filter=None):
 
 
 def classify_tags(tags):
-    """Classify tags into categories: Rollout, RolloutEval, Training, Timer."""
+    """Classify tags into categories by their top-level prefix."""
     categories = defaultdict(list)
     for tag in tags:
         parts = tag.split("/")
@@ -121,15 +114,14 @@ def classify_tags(tags):
 
 
 def extract_metric_name(tag):
-    """Extract the metric name from a TensorBoard tag like Rollout/agent_0/policy_id/win -> win"""
+    """Extract the metric name from a TensorBoard tag: Rollout/agent_0/pid/win -> win"""
     parts = tag.rstrip("/").split("/")
     return parts[-1] if parts else tag
 
 
-def aggregate_runs(all_runs_data, x_axis="step"):
+def aggregate_runs(all_runs_data):
     """
     Aggregate scalar data across multiple runs.
-
     Returns: {tag: DataFrame with columns [step, mean, std, min, max, n_runs]}
     """
     tag_data = defaultdict(lambda: defaultdict(list))
@@ -157,10 +149,19 @@ def aggregate_runs(all_runs_data, x_axis="step"):
     return aggregated
 
 
-def export_csv(aggregated, output_dir):
-    """Export aggregated data to CSV files, one per metric category."""
+def export_csv(aggregated, all_runs_data, runs, output_dir):
+    """
+    Export two sets of CSV files:
+      - aggregated/<category>.csv  — mean/std/min/max across runs per step
+      - raw/<tag_sanitised>.csv    — raw per-run values (run_id, step, value)
+    """
     os.makedirs(output_dir, exist_ok=True)
+    agg_dir = os.path.join(output_dir, "aggregated")
+    raw_dir = os.path.join(output_dir, "raw")
+    os.makedirs(agg_dir, exist_ok=True)
+    os.makedirs(raw_dir, exist_ok=True)
 
+    # --- aggregated CSVs (one per category) ---
     categories = classify_tags(aggregated.keys())
     for category, tags in categories.items():
         rows = []
@@ -179,101 +180,119 @@ def export_csv(aggregated, output_dir):
                     "n_runs": int(row["n_runs"]),
                 })
         out_df = pd.DataFrame(rows)
-        csv_path = os.path.join(output_dir, f"{category}.csv")
+        csv_path = os.path.join(agg_dir, f"{category}.csv")
         out_df.to_csv(csv_path, index=False)
-        print(f"Exported {csv_path} ({len(out_df)} rows, {len(tags)} metrics)")
+        print(f"  Aggregated CSV: {csv_path} ({len(out_df)} rows)")
+
+    # --- raw CSVs (one per tag) ---
+    run_names = [os.path.basename(r) for r in runs]
+    all_tags = set()
+    for run_data in all_runs_data:
+        all_tags.update(run_data.keys())
+
+    for tag in sorted(all_tags):
+        rows = []
+        for run_idx, run_data in enumerate(all_runs_data):
+            run_name = run_names[run_idx] if run_idx < len(run_names) else f"run_{run_idx}"
+            if tag not in run_data:
+                continue
+            for wall_time, step, value in run_data[tag]:
+                rows.append({"run": run_name, "step": step, "value": value, "wall_time": wall_time})
+        if not rows:
+            continue
+        safe_name = tag.replace("/", "__")
+        csv_path = os.path.join(raw_dir, f"{safe_name}.csv")
+        pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+    print(f"  Raw CSVs saved to: {raw_dir}/")
+
+
+def save_single_plot(df, metric, tag, output_dir, x_axis_label, title_prefix, category):
+    """Save one PNG for a single metric."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(df["step"], df["mean"], linewidth=1.5, label="mean")
+    if df["n_runs"].iloc[0] > 1:
+        ax.fill_between(
+            df["step"],
+            df["mean"] - df["std"],
+            df["mean"] + df["std"],
+            alpha=0.25,
+            label="±1 std",
+        )
+        ax.legend(fontsize=9)
+
+    ax.set_xlabel(x_axis_label)
+    ax.set_ylabel(metric)
+    ax.set_title(f"{title_prefix}[{category}] {metric}")
+    ax.grid(True, alpha=0.3)
+
+    if metric in ("win", "lose", "score"):
+        ax.set_ylim(-0.05, 1.05)
+
+    safe_metric = metric.replace("/", "_")
+    fig_path = os.path.join(output_dir, f"{category}__{safe_metric}.png")
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return fig_path
 
 
 def plot_metrics(aggregated, output_dir, x_axis_label="Global Step", title_prefix=""):
-    """Generate plots for each metric category."""
-    os.makedirs(output_dir, exist_ok=True)
+    """Generate one PNG per metric."""
+    plots_dir = os.path.join(output_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
 
     categories = classify_tags(aggregated.keys())
 
-    # Rollout and RolloutEval metrics of interest
-    key_metrics = ["win", "reward", "score", "lose", "my_goal", "goal_diff"]
-    training_metrics = ["policy_loss", "value_loss", "entropy", "approx_kl"]
+    key_metrics = {"win", "reward", "score", "lose", "my_goal", "goal_diff"}
+    training_metrics = {"policy_loss", "value_loss", "entropy", "approx_kl"}
 
+    saved = []
     for category, tags in categories.items():
         if "Timer" in category:
             continue
 
-        metrics_in_category = {}
         for tag in tags:
             metric = extract_metric_name(tag)
-            metrics_in_category[metric] = tag
 
-        if category in ("Rollout", "RolloutEval"):
-            plot_list = [m for m in key_metrics if m in metrics_in_category]
-        elif category == "Training":
-            plot_list = [m for m in training_metrics if m in metrics_in_category]
-        else:
-            plot_list = list(metrics_in_category.keys())[:8]
+            if category in ("Rollout", "RolloutEval") and metric not in key_metrics:
+                continue
+            if category == "Training" and metric not in training_metrics:
+                continue
 
-        if not plot_list:
-            continue
-
-        n_cols = min(3, len(plot_list))
-        n_rows = (len(plot_list) + n_cols - 1) // n_cols
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows))
-        if n_rows * n_cols == 1:
-            axes = np.array([axes])
-        axes = axes.flatten()
-
-        for i, metric in enumerate(plot_list):
-            ax = axes[i]
-            tag = metrics_in_category[metric]
             df = aggregated[tag]
+            path = save_single_plot(df, metric, tag, plots_dir, x_axis_label, title_prefix, category)
+            saved.append(path)
+            print(f"  Saved: {path}")
 
-            ax.plot(df["step"], df["mean"], linewidth=1.5, label="mean")
-            ax.fill_between(
-                df["step"],
-                df["mean"] - df["std"],
-                df["mean"] + df["std"],
-                alpha=0.25,
-                label="±1 std",
-            )
-            ax.set_xlabel(x_axis_label)
-            ax.set_ylabel(metric)
-            ax.set_title(f"{title_prefix}{metric}")
-            ax.grid(True, alpha=0.3)
-            if df["n_runs"].iloc[0] > 1:
-                ax.legend(fontsize=8)
-
-        for i in range(len(plot_list), len(axes)):
-            axes[i].set_visible(False)
-
-        fig.suptitle(f"{category} Metrics", fontsize=14, y=1.02)
-        plt.tight_layout()
-        fig_path = os.path.join(output_dir, f"{category}_metrics.png")
-        fig.savefig(fig_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved plot: {fig_path}")
-
-    # Dedicated win rate plot
+    # Dedicated combined win-rate plot (Rollout + RolloutEval overlaid)
     win_tags = [t for t in aggregated if "win" in t.lower() and "Timer" not in t]
-    if win_tags:
+    if len(win_tags) > 1:
         fig, ax = plt.subplots(figsize=(10, 6))
         for tag in win_tags:
             df = aggregated[tag]
             label = tag.split("/")[0]
             ax.plot(df["step"], df["mean"], linewidth=1.5, label=label)
-            ax.fill_between(
-                df["step"],
-                df["mean"] - df["std"],
-                df["mean"] + df["std"],
-                alpha=0.2,
-            )
+            if df["n_runs"].iloc[0] > 1:
+                ax.fill_between(
+                    df["step"],
+                    df["mean"] - df["std"],
+                    df["mean"] + df["std"],
+                    alpha=0.2,
+                )
         ax.set_xlabel(x_axis_label)
         ax.set_ylabel("Win Rate")
-        ax.set_title(f"{title_prefix}Win Rate over Training")
+        ax.set_title(f"{title_prefix}Win Rate (Train vs Eval)")
         ax.grid(True, alpha=0.3)
         ax.legend()
         ax.set_ylim(-0.05, 1.05)
-        fig_path = os.path.join(output_dir, "win_rate.png")
+        fig_path = os.path.join(plots_dir, "win_rate_combined.png")
         fig.savefig(fig_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved plot: {fig_path}")
+        saved.append(fig_path)
+        print(f"  Saved: {fig_path}")
+
+    return saved
 
 
 def print_summary(aggregated):
@@ -301,7 +320,7 @@ def main():
     parser.add_argument("--log_dir", type=str, default="logs/gr_football",
                         help="Root log directory (default: logs/gr_football)")
     parser.add_argument("--expr_name", type=str, required=True,
-                        help="Experiment name (e.g. benchmark_academy_3_vs_1_with_keeper_mappo)")
+                        help="Experiment name (subdirectory under log_dir)")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Output directory for CSVs and plots (default: results/<expr_name>)")
     parser.add_argument("--metrics", nargs="*", default=None,
@@ -320,6 +339,7 @@ def main():
 
     print("\nParsing TensorBoard events...")
     all_runs_data = []
+    valid_runs = []
     for run_dir in runs:
         event_files = find_event_files(run_dir)
         if not event_files:
@@ -328,6 +348,7 @@ def main():
         run_data = parse_tb_events(event_files, metric_filter=args.metrics)
         if run_data:
             all_runs_data.append(run_data)
+            valid_runs.append(run_dir)
             print(f"  Parsed {os.path.basename(run_dir)}: {len(run_data)} tags")
         else:
             print(f"  [WARN] No scalar data in {run_dir}")
@@ -341,10 +362,13 @@ def main():
 
     x_label = "Global Step" if args.x_axis == "global_step" else "Rollout Epoch"
 
-    export_csv(aggregated, args.output_dir)
+    print("\nExporting CSVs...")
+    export_csv(aggregated, all_runs_data, valid_runs, args.output_dir)
+
     print_summary(aggregated)
 
     if not args.no_plot:
+        print("\nGenerating plots (one per metric)...")
         plot_metrics(aggregated, args.output_dir, x_axis_label=x_label,
                      title_prefix=f"{args.expr_name}\n")
 
