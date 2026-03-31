@@ -64,9 +64,16 @@ Rules:
 1. Output ONLY a JSON array of exactly 19 floats. No explanation, no markdown, no code block.
 2. Respect hard legality: the environment already blocks truly illegal moves; your weights
    guide STRATEGIC choices on top of that.
-3. Keep penalties small unless an action is clearly counter-productive in this regime.
-4. Actions 1-8 (directional movement) should usually keep weight 0.0 unless a specific
-   direction is clearly harmful (e.g. moving into own goal).
+3. Keep ALL penalties at 0.0 by default. Only assign a non-zero penalty when you are HIGHLY
+   CONFIDENT the action is counter-productive. Most entries should be 0.0.
+4. Actions 1-8 (directional movement) must always be 0.0.
+5. Action 12 (shot) must ALWAYS be 0.0. The agent must be free to shoot at any time;
+   whether a shot is physically possible is handled by the environment.
+6. Action 13 (sprint) must ALWAYS be 0.0.
+7. Action 16 (slide tackle) should only receive a small penalty (max 0.3) in specific
+   attacking situations where sliding is clearly wrong (e.g. my team has the ball deep in
+   the attacking third). Do NOT penalize slide in defensive situations.
+8. Penalties above 0.3 are almost never appropriate — the RL agent needs freedom to explore.
 """
 
 
