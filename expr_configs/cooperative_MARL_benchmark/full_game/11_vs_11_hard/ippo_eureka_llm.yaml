@@ -7,7 +7,7 @@ slurm_config:
   num_gpus: 4
   cpus_per_task: 48
   memory_gb: 360
-  time_hours: 3
+  time_hours: 1
   partition: "sharing"
 
 distributed:
