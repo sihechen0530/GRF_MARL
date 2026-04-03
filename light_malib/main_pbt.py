@@ -71,7 +71,7 @@ def start_cluster(use_distributed: bool = False):
         # Use a random port to avoid collisions with other jobs sharing the same node
         # (port 6379 is Ray's default and would be claimed by the first job).
         ray.shutdown()
-        cluster_start_info = ray.init(resources={}, port=0)
+        cluster_start_info = ray.init(resources={}, _temp_dir=f"/tmp/ray_{os.getpid()}")
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)
