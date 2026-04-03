@@ -204,7 +204,7 @@ def main():
     parser.add_argument("--agent_id", type=str, default="agent_0")
     parser.add_argument("--filter", nargs="*", default=None,
                         help="Filter checkpoint names (e.g. best last epoch_500)")
-    parser.add_argument("--epoch_interval", type=int, default=None,
+    parser.add_argument("--epoch_interval", type=int, default=50,
                         help="Only evaluate every Nth epoch checkpoint")
     _ncpu = (os.cpu_count() or 8) - 2
     _default_workers = min(32, max(1, _ncpu))
@@ -249,9 +249,28 @@ def main():
             args.output_dir = os.path.dirname(args.checkpoint_dir)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    parallel_ckpts = max(1, min(args.parallel_checkpoints, len(checkpoints)))
+    # Load existing results and skip already-evaluated checkpoints
+    csv_path = os.path.join(args.output_dir, "eval_results.csv")
+    existing_df = None
+    existing_results = []
+    if os.path.exists(csv_path):
+        existing_df = pd.read_csv(csv_path)
+        already_done = set(existing_df["checkpoint"].tolist())
+        skipped = [(name, path) for name, path in checkpoints if name in already_done]
+        checkpoints = [(name, path) for name, path in checkpoints if name not in already_done]
+        existing_results = existing_df.to_dict("records")
+        if skipped:
+            print(f"Skipping {len(skipped)} already-evaluated checkpoint(s): {[n for n, _ in skipped]}")
+        if not checkpoints:
+            print("All checkpoints already evaluated. Regenerating plots from existing results.")
+
+    if not checkpoints and not existing_results:
+        print("[ERROR] No checkpoints found")
+        sys.exit(1)
+
+    parallel_ckpts = max(1, min(args.parallel_checkpoints, len(checkpoints))) if checkpoints else 1
     workers_per_ckpt = max(1, args.num_workers // parallel_ckpts)
-    if parallel_ckpts > 1:
+    if checkpoints and parallel_ckpts > 1:
         print(f"Using {parallel_ckpts} checkpoint(s) in parallel, {workers_per_ckpt} workers each")
 
     def run_one_checkpoint(item):
@@ -289,30 +308,35 @@ def main():
             (win_mean, reward_mean, goal_mean),
         )
 
-    results = [None] * len(checkpoints)
-    if parallel_ckpts <= 1:
-        for idx, (ckpt_name, ckpt_dir) in enumerate(checkpoints):
-            print(f"\n[{idx+1}/{len(checkpoints)}] Evaluating {ckpt_name} ({args.num_games} games, {workers_per_ckpt} workers)...")
-            _, _, elapsed, n, result, _ = run_one_checkpoint((idx, ckpt_name, ckpt_dir))
-            results[idx] = result
-            print(f"  Completed in {elapsed:.1f}s ({elapsed/n:.2f}s/game)")
-            print(f"  Win Rate:  {result['win_rate']:.3f} ± {result['win_ci']:.3f}")
-            print(f"  Reward:    {result['reward_mean']:.3f} ± {result['reward_ci']:.3f}")
-            print(f"  Goals:     {result['goal_mean']:.3f} ± {result['goal_ci']:.3f}")
-    else:
-        items = [(idx, name, path) for idx, (name, path) in enumerate(checkpoints)]
-        with ThreadPoolExecutor(max_workers=parallel_ckpts) as executor:
-            futures = [executor.submit(run_one_checkpoint, item) for item in items]
-            for future in as_completed(futures):
-                idx, ckpt_name, elapsed, n, result, (wr, rm, gm) = future.result()
-                results[idx] = result
-                print(f"\n[{idx+1}/{len(checkpoints)}] {ckpt_name}: {elapsed:.1f}s ({elapsed/n:.2f}s/game) | Win {wr:.3f} Reward {rm:.3f}")
-        results = [r for r in results if r is not None]
+    new_results = [None] * len(checkpoints)
+    if checkpoints:
+        if parallel_ckpts <= 1:
+            for idx, (ckpt_name, ckpt_dir) in enumerate(checkpoints):
+                print(f"\n[{idx+1}/{len(checkpoints)}] Evaluating {ckpt_name} ({args.num_games} games, {workers_per_ckpt} workers)...")
+                _, _, elapsed, n, result, _ = run_one_checkpoint((idx, ckpt_name, ckpt_dir))
+                new_results[idx] = result
+                # Append to CSV incrementally so progress is not lost on interruption
+                pd.DataFrame([result]).to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
+                print(f"  Completed in {elapsed:.1f}s ({elapsed/n:.2f}s/game)")
+                print(f"  Win Rate:  {result['win_rate']:.3f} ± {result['win_ci']:.3f}")
+                print(f"  Reward:    {result['reward_mean']:.3f} ± {result['reward_ci']:.3f}")
+                print(f"  Goals:     {result['goal_mean']:.3f} ± {result['goal_ci']:.3f}")
+        else:
+            items = [(idx, name, path) for idx, (name, path) in enumerate(checkpoints)]
+            with ThreadPoolExecutor(max_workers=parallel_ckpts) as executor:
+                futures = [executor.submit(run_one_checkpoint, item) for item in items]
+                for future in as_completed(futures):
+                    idx, ckpt_name, elapsed, n, result, (wr, rm, gm) = future.result()
+                    new_results[idx] = result
+                    pd.DataFrame([result]).to_csv(csv_path, mode="a", header=not os.path.exists(csv_path), index=False)
+                    print(f"\n[{idx+1}/{len(checkpoints)}] {ckpt_name}: {elapsed:.1f}s ({elapsed/n:.2f}s/game) | Win {wr:.3f} Reward {rm:.3f}")
+        new_results = [r for r in new_results if r is not None]
 
+    # Merge new results with any previously saved ones and rewrite the full CSV
+    results = existing_results + new_results
     df = pd.DataFrame(results)
-    csv_path = os.path.join(args.output_dir, "eval_results.csv")
     df.to_csv(csv_path, index=False)
-    print(f"\nResults saved to {csv_path}")
+    print(f"\nResults saved to {csv_path} ({len(results)} total checkpoints)")
 
     # Print summary table
     print("\n" + "=" * 80)
