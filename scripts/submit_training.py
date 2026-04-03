@@ -219,11 +219,14 @@ def list_checkpoints(expr_group=None, expr_name=None):
                     if config_file.exists():
                         print(f"{checkpoint_dir}")
 
-def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, with_eval=True):
+def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, with_eval=True, fresh=False):
     """Submit a chain of dependent jobs that resume from checkpoints.
 
     Each job depends on the previous one completing, and automatically
     resumes from the latest checkpoint.
+
+    If fresh=True, job 1 starts a brand-new run (no --auto-resume); jobs 2+
+    still use --auto-resume so they continue from whatever job 1 created.
     """
 
     # Validate config file
@@ -236,7 +239,11 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, w
     print(f"Chain submitting {num_jobs} dependent jobs")
     print(f"  Experiment: {expr_group}/{expr_name}")
     print(f"  Config: {config_path}")
-    print(f"  Each job will resume from latest checkpoint\n")
+    if fresh:
+        print(f"  Mode: fresh (job 1 starts new run, subsequent jobs auto-resume)")
+    else:
+        print(f"  Each job will resume from latest checkpoint")
+    print()
 
     job_ids = []
     prev_job_id = None
@@ -244,7 +251,11 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, w
     for job_num in range(1, num_jobs + 1):
         print(f"Submitting job {job_num}/{num_jobs}...")
 
-        print(f"  Job {job_num} will dynamically find the latest checkpoint at execution time")
+        is_first_fresh = fresh and job_num == 1
+        if is_first_fresh:
+            print(f"  Job {job_num} will start a fresh training run")
+        else:
+            print(f"  Job {job_num} will dynamically find the latest checkpoint at execution time")
 
         # Get SLURM config
         slurm_cfg = get_slurm_config(config_path)
@@ -283,8 +294,9 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, w
         sbatch_cmd.append(slurm_script)
         sbatch_cmd.extend(["--config", config_path])
 
-        # Enable dynamic auto-resume for the slurm script
-        sbatch_cmd.append("--auto-resume")
+        # Job 1 of a fresh chain starts without auto-resume; all others auto-resume
+        if not is_first_fresh:
+            sbatch_cmd.append("--auto-resume")
 
         print(f"  Command: {' '.join(sbatch_cmd)}\n")
 
@@ -313,11 +325,15 @@ def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, w
     print(f"Chain submission complete:")
     print(f"  Total jobs: {num_jobs}")
     print(f"  Job IDs: {', '.join(job_ids)}")
-    print(f"\nEach job will:")
-    print(f"  1. Wait for previous job to complete")
-    print(f"  2. Find latest checkpoint from: {log_dir}/{expr_group}/{expr_name}/")
-    print(f"  3. Resume training from that checkpoint")
-    print(f"  4. Save new checkpoint on completion")
+    print(f"\nJobs will:")
+    if fresh:
+        print(f"  Job 1: start a fresh run under {log_dir}/{expr_group}/{expr_name}/<timestamp>/")
+        print(f"  Jobs 2+: wait for previous job, then auto-resume from that new run")
+    else:
+        print(f"  1. Wait for previous job to complete")
+        print(f"  2. Find latest checkpoint from: {log_dir}/{expr_group}/{expr_name}/")
+        print(f"  3. Resume training from that checkpoint")
+        print(f"  4. Save new checkpoint on completion")
     print(f"\nMonitor with: squeue -u $USER")
     print(f"Cancel all with: scancel {job_ids[0]} (will cancel chain)")
     print("=" * 80)
@@ -408,6 +424,10 @@ def main():
         help="SLURM job name (will be appended with _part1, _part2, etc)"
     )
     chain_parser.add_argument(
+        "--fresh", action="store_true",
+        help="Start a brand-new run instead of resuming from the latest checkpoint"
+    )
+    chain_parser.add_argument(
         "--no-eval", action="store_true",
         help="Skip submitting the dependent eval job after the last training job"
     )
@@ -452,7 +472,7 @@ def main():
 
     elif args.command == "chain-submit":
         chain_submit_jobs(args.config, args.num_jobs, args.job_name, args.no_submit,
-                          with_eval=not args.no_eval)
+                          with_eval=not args.no_eval, fresh=args.fresh)
 
 
 if __name__ == "__main__":
