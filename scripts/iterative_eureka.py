@@ -36,15 +36,25 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from light_malib.llm import (
-    chat_completions_text,
-    ensure_phi_export,
-    extract_python_code_block,
-)
-from light_malib.llm.prompts_phi import (
-    build_iterative_eureka_messages,
-    messages_as_openai_json,
-)
+
+def _import_llm():
+    """Lazy import LLM dependencies (only needed for revise/loop, not slurm-loop)."""
+    from light_malib.llm import (
+        chat_completions_text,
+        ensure_phi_export,
+        extract_python_code_block,
+    )
+    from light_malib.llm.prompts_phi import (
+        build_iterative_eureka_messages,
+        messages_as_openai_json,
+    )
+    return (
+        chat_completions_text,
+        ensure_phi_export,
+        extract_python_code_block,
+        build_iterative_eureka_messages,
+        messages_as_openai_json,
+    )
 
 
 def _extract_diagnosis(raw: str) -> str:
@@ -75,6 +85,14 @@ def revise_phi(
     max_tokens: int = 4096,
 ) -> tuple[str, str, str]:
     """Call LLM to diagnose and revise phi. Returns (diagnosis, new_phi_code, raw_response)."""
+    (
+        chat_completions_text,
+        ensure_phi_export,
+        extract_python_code_block,
+        build_iterative_eureka_messages,
+        messages_as_openai_json,
+    ) = _import_llm()
+
     pairs = build_iterative_eureka_messages(
         current_phi_code=current_phi_code,
         behavior_metrics_json=metrics_json,
@@ -284,6 +302,152 @@ def cmd_loop(args):
 
 
 # ---------------------------------------------------------------------------
+# CLI: slurm-loop — fully automated SLURM job chain
+# ---------------------------------------------------------------------------
+def cmd_slurm_loop(args):
+    """Submit a full SLURM job chain: [train × N] → [eval+revise] → [train × N] → ... repeated."""
+    import os
+    import subprocess
+
+    config_path = args.config
+    if not os.path.exists(config_path):
+        print(f"Error: config not found: {config_path}")
+        sys.exit(1)
+    if not os.path.exists("train.slurm"):
+        print("Error: train.slurm not found in project root")
+        sys.exit(1)
+    if not os.path.exists("eval_revise.slurm"):
+        print("Error: eval_revise.slurm not found in project root")
+        sys.exit(1)
+
+    try:
+        import yaml
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        slurm_cfg = cfg.get("slurm_config", {})
+    except ImportError:
+        print("Warning: pyyaml not installed, using default SLURM config")
+        slurm_cfg = {}
+
+    train_hours = int(slurm_cfg.get("time_hours", 1))
+    train_time = f"{train_hours}:00:00"
+    train_partition = slurm_cfg.get("partition", "sharing")
+    train_gpus = slurm_cfg.get("num_gpus", 1)
+    train_cpus = slurm_cfg.get("cpus_per_task", 16)
+    train_mem = slurm_cfg.get("memory_gb", 128)
+    gpu_type = slurm_cfg.get("gpu_type")
+
+    if gpu_type:
+        gpu_str = f"gpu:{gpu_type}:{train_gpus}"
+    else:
+        gpu_str = f"gpu:{train_gpus}"
+
+    base_name = args.job_name or "eureka"
+    all_job_ids = []
+    prev_job_id = None
+
+    print("=" * 70)
+    print(f"  ITERATIVE EUREKA — SLURM Loop")
+    print(f"  Config:        {config_path}")
+    print(f"  Iterations:    {args.num_iterations}")
+    print(f"  Train jobs/iter: {args.train_jobs_per_iter}")
+    print(f"  Eval games:    {args.num_eval_games}")
+    print(f"  Total SLURM jobs: {args.num_iterations * (args.train_jobs_per_iter + 1)}")
+    print("=" * 70)
+
+    # Inject conda env name if set
+    conda_env = os.environ.get("CONDA_ENV_NAME")
+
+    def _sbatch(cmd: list[str]) -> str | None:
+        """Submit or dry-run an sbatch command. Returns job id or simulated id."""
+        if conda_env:
+            cmd.insert(1, f"--export=ALL,CONDA_ENV_NAME={conda_env}")
+        print(f"  $ {' '.join(cmd)}")
+        if args.no_submit:
+            fake_id = f"SIM_{len(all_job_ids)+1}"
+            all_job_ids.append(fake_id)
+            return fake_id
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        jid = result.stdout.strip().split()[-1]
+        all_job_ids.append(jid)
+        return jid
+
+    for it in range(1, args.num_iterations + 1):
+        print(f"\n--- Iteration {it}/{args.num_iterations} ---")
+
+        # ---- Training segment: N chained jobs ----
+        for tj in range(1, args.train_jobs_per_iter + 1):
+            job_label = f"{base_name}_iter{it}_train{tj}"
+            cmd = [
+                "sbatch",
+                f"--job-name={job_label}",
+                f"--gres={gpu_str}",
+                f"--cpus-per-task={train_cpus}",
+                f"--mem={train_mem}G",
+                f"--time={train_time}",
+                f"--partition={train_partition}",
+            ]
+            if prev_job_id:
+                cmd.append(f"--dependency=afterany:{prev_job_id}")
+
+            cmd.append("train.slurm")
+            cmd.extend(["--config", config_path, "--auto-resume"])
+
+            prev_job_id = _sbatch(cmd)
+            print(f"    → Train job {tj}/{args.train_jobs_per_iter}: {prev_job_id}")
+
+        # ---- Eval + Revise job ----
+        eval_label = f"{base_name}_iter{it}_eval_revise"
+        eval_cmd = [
+            "sbatch",
+            f"--job-name={eval_label}",
+            f"--gres=gpu:1",
+            f"--cpus-per-task={min(train_cpus, 16)}",
+            f"--mem=64G",
+            f"--time=1:00:00",
+            f"--partition={train_partition}",
+        ]
+        if prev_job_id:
+            eval_cmd.append(f"--dependency=afterok:{prev_job_id}")
+
+        eval_cmd.append("eval_revise.slurm")
+        eval_cmd.extend([
+            "--config", config_path,
+            "--iteration", str(it),
+            "--num-eval-games", str(args.num_eval_games),
+            "--num-eval-workers", str(args.num_eval_workers),
+            "--phi-dir", args.phi_dir,
+            "--scenario-name", args.scenario_name,
+            "--temperature", str(args.temperature),
+        ])
+        if args.hint:
+            eval_cmd.extend(["--hint", args.hint])
+
+        prev_job_id = _sbatch(eval_cmd)
+        print(f"    → Eval+Revise: {prev_job_id}")
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("SLURM Loop Submission Complete")
+    print("=" * 70)
+    total = len(all_job_ids)
+    print(f"Total jobs submitted: {total}")
+    if not args.no_submit:
+        print(f"Job IDs: {', '.join(all_job_ids)}")
+        print(f"\nMonitor: squeue -u $USER")
+        print(f"Cancel all: scancel {all_job_ids[0]}  (or scancel {{{all_job_ids[0]}..{all_job_ids[-1]}}})")
+    else:
+        print("(dry-run mode — no jobs were actually submitted)")
+
+    print(f"\nWorkflow per iteration:")
+    print(f"  1. Train ({args.train_jobs_per_iter} jobs × {train_hours}h each)")
+    print(f"  2. Eval {args.num_eval_games} games → extract metrics")
+    print(f"  3. LLM diagnoses + revises phi → overwrites {args.phi_dir}/phi_llm.py")
+    print(f"  4. Next iteration trains with updated phi")
+    print("=" * 70)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -302,8 +466,8 @@ def main():
     rev.add_argument("--scenario-name", default="GRF 11v11 full game")
     rev.add_argument("--temperature", type=float, default=0.3)
 
-    # --- loop ---
-    lp = subparsers.add_parser("loop", help="Full eval→diagnose→revise loop")
+    # --- loop (local) ---
+    lp = subparsers.add_parser("loop", help="Full eval→diagnose→revise loop (local, no training)")
     lp.add_argument("--checkpoint", required=True, help="Path to trained checkpoint")
     lp.add_argument("--config", required=True, help="Training YAML config")
     lp.add_argument("--num-iterations", type=int, default=3)
@@ -316,11 +480,34 @@ def main():
     lp.add_argument("--auto-train", action="store_true",
                      help="Automatically submit training jobs between iterations (not yet implemented)")
 
+    # --- slurm-loop (SLURM cluster, full automation) ---
+    sl = subparsers.add_parser(
+        "slurm-loop",
+        help="Submit fully automated SLURM chain: [train×N] → [eval+revise] → repeat"
+    )
+    sl.add_argument("--config", required=True, help="Training YAML config (must have slurm_config)")
+    sl.add_argument("--num-iterations", type=int, default=3,
+                    help="Number of Eureka iterations (each = train + eval + revise)")
+    sl.add_argument("--train-jobs-per-iter", type=int, default=5,
+                    help="Number of chained training SLURM jobs per iteration "
+                         "(e.g. 5 × 1h on sharing = 5h of training)")
+    sl.add_argument("--num-eval-games", type=int, default=20)
+    sl.add_argument("--num-eval-workers", type=int, default=4)
+    sl.add_argument("--phi-dir", default="generated_phi")
+    sl.add_argument("--job-name", default=None, help="Base SLURM job name prefix")
+    sl.add_argument("--hint", type=str, default="")
+    sl.add_argument("--scenario-name", default="GRF 11v11 full game")
+    sl.add_argument("--temperature", type=float, default=0.3)
+    sl.add_argument("--no-submit", action="store_true",
+                    help="Dry run: print commands without submitting")
+
     args = parser.parse_args()
     if args.command == "revise":
         cmd_revise(args)
     elif args.command == "loop":
         cmd_loop(args)
+    elif args.command == "slurm-loop":
+        cmd_slurm_loop(args)
     else:
         parser.print_help()
 
