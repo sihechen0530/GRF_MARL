@@ -104,3 +104,62 @@ def messages_as_openai_json(
     pairs: List[Tuple[str, str]],
 ) -> List[dict]:
     return [{"role": r, "content": c} for r, c in pairs]
+
+
+# ---------------------------------------------------------------------------
+# Iterative Eureka: diagnose behavior metrics & revise phi
+# ---------------------------------------------------------------------------
+
+ITERATIVE_EUREKA_SYSTEM_PROMPT = """You are an expert in reinforcement learning reward shaping for multi-agent Google Research Football (GRF).
+
+You are given:
+1) The CURRENT potential function `phi(state, role) -> float` used for reward shaping.
+2) BEHAVIORAL METRICS collected from evaluation episodes of agents trained with this phi.
+3) Optionally, a DIAGNOSIS REQUEST from the human specifying what to improve.
+
+Your task:
+A) DIAGNOSE: Analyze the behavioral metrics to identify weaknesses or suboptimal behaviors. Provide a concise analysis (3-5 bullet points).
+B) REVISE: Write an improved `phi(state, role)` that addresses the diagnosed issues.
+
+The revised phi MUST satisfy all the same constraints as the original:
+- Pure function: no I/O, no randomness, no globals.
+- Use only stdlib + numpy.
+- Return float in [0.0, 1.0].
+- Branch on role string.
+- State dict keys: player_idx, is_left_team, my_pos, my_vel, has_ball, ball_pos, ball_vel,
+  dist_to_goal, ball_dist_to_goal, dist_to_ball, nearest_opp_dist, teammates_pos,
+  opponents_pos, game_mode, score_diff, steps_left.
+
+Output format (STRICT):
+1) First output your diagnosis inside a ```text block```.
+2) Then output the revised phi in a single ```python block```.
+No other text outside these two blocks.
+"""
+
+
+def build_iterative_eureka_messages(
+    *,
+    current_phi_code: str,
+    behavior_metrics_json: str,
+    iteration: int = 1,
+    diagnosis_request: str = "",
+    scenario_name: str = "GRF 11v11 full game",
+) -> List[Tuple[str, str]]:
+    """Build chat messages for iterative Eureka phi revision."""
+    user_parts = [
+        f"## Iteration {iteration} — Revise phi for {scenario_name}\n",
+        "### Current phi code:\n```python\n" + current_phi_code.strip() + "\n```\n",
+        "### Behavioral metrics from evaluation:\n```json\n" + behavior_metrics_json.strip() + "\n```\n",
+    ]
+    if diagnosis_request.strip():
+        user_parts.append(
+            f"### Human diagnosis request:\n{diagnosis_request.strip()}\n"
+        )
+    user_parts.append(
+        "\nDiagnose the issues and output an improved phi. "
+        "Remember: ```text``` block for diagnosis, then ```python``` block for revised phi."
+    )
+    return [
+        ("system", ITERATIVE_EUREKA_SYSTEM_PROMPT),
+        ("user", "\n".join(user_parts)),
+    ]
