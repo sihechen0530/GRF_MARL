@@ -460,7 +460,7 @@ def _worker_eval(args) -> list[dict]:
 
         all_episode_metrics.append(ep_metrics)
 
-    env.close()
+    env._env.close()
     return all_episode_metrics
 
 
