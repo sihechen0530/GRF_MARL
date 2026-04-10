@@ -33,6 +33,71 @@ from light_malib.envs.gr_football.reward_state import extract_reward_state
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint path resolution
+# ---------------------------------------------------------------------------
+def resolve_policy_checkpoint(path: str, agent_id: str = "agent_0") -> str:
+    """Resolve a run directory or checkpoint path to an actual policy dir with desc.pkl.
+
+    Accepted inputs:
+      - Direct policy dir (has desc.pkl)                  → returned as-is
+      - Run dir (timestamp):  <run>/agent_0/<pid>/best/   → best or latest epoch
+      - Experiment dir:       <exp>/<latest_run>/agent_0/… → walks down
+    """
+    import os, re
+
+    # Already a policy checkpoint?
+    if os.path.isfile(os.path.join(path, "desc.pkl")):
+        return path
+
+    # Try run_dir/agent_0/<policy_id>/<ckpt>/
+    agent_dir = os.path.join(path, agent_id)
+    if os.path.isdir(agent_dir):
+        for policy_id in sorted(os.listdir(agent_dir)):
+            policy_dir = os.path.join(agent_dir, policy_id)
+            if not os.path.isdir(policy_dir):
+                continue
+            # prefer "best", then highest epoch_N, then anything with desc.pkl
+            candidates = []
+            for name in os.listdir(policy_dir):
+                ckpt = os.path.join(policy_dir, name)
+                if os.path.isfile(os.path.join(ckpt, "desc.pkl")):
+                    candidates.append((name, ckpt))
+            if not candidates:
+                continue
+
+            # sort: best first, then by epoch number descending
+            def _sort_key(item):
+                n = item[0]
+                if n == "best":
+                    return (0, 999999)
+                m = re.search(r"(\d+)", n)
+                epoch = int(m.group(1)) if m else -1
+                if "last" in n:
+                    return (1, epoch)
+                return (2, -epoch)
+
+            candidates.sort(key=_sort_key)
+            chosen = candidates[0][1]
+            print(f"  Resolved checkpoint: {chosen}")
+            return chosen
+
+    # Maybe it's an experiment dir — pick the latest timestamped run
+    if os.path.isdir(path):
+        subdirs = sorted([
+            d for d in os.listdir(path)
+            if os.path.isdir(os.path.join(path, d))
+        ])
+        if subdirs:
+            latest_run = os.path.join(path, subdirs[-1])
+            return resolve_policy_checkpoint(latest_run, agent_id)
+
+    raise FileNotFoundError(
+        f"Could not find desc.pkl under {path}. "
+        f"Expected structure: <run_dir>/{agent_id}/<policy_id>/<checkpoint>/"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Field geometry constants (GRF coordinate system)
 # ---------------------------------------------------------------------------
 FIELD_X_MIN, FIELD_X_MAX = -1.0, 1.0
@@ -537,6 +602,10 @@ def main():
                      cfg.rollout_manager.worker.get("rollout_length", 3001))
     n_left_ctrl = env_cfg.scenario_config.number_of_left_players_agent_controls
 
+    # resolve checkpoint path to actual policy dir
+    ckpt_path = resolve_policy_checkpoint(args.checkpoint)
+    print(f"Using checkpoint: {ckpt_path}")
+
     # determine phi module
     phi_mod = args.phi_module
     if phi_mod is None:
@@ -553,7 +622,7 @@ def main():
 
     worker_args = [
         (
-            args.checkpoint,
+            ckpt_path,
             args.opponent,
             OmegaConf.to_container(env_cfg, resolve=True),
             rollout_length,
@@ -582,7 +651,8 @@ def main():
 
     report = aggregate_metrics(all_episodes, n_left_ctrl)
     report["_meta"] = {
-        "checkpoint": args.checkpoint,
+        "checkpoint": ckpt_path,
+        "checkpoint_arg": args.checkpoint,
         "config": args.config,
         "num_games": len(all_episodes),
         "phi_module": phi_mod,
