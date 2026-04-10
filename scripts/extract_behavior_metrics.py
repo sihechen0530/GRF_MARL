@@ -375,6 +375,14 @@ def _worker_eval(args) -> list[dict]:
         step_data = env_rets
         phi_values = []
 
+        # initialize RNN hidden states for each policy
+        rnn_states = {}
+        for aid, (pid, pol) in behavior_policies.items():
+            obs_sample = step_data[aid].get(EpisodeKey.CUR_OBS,
+                         step_data[aid].get(EpisodeKey.NEXT_OBS))
+            batch_size = obs_sample.shape[0] if hasattr(obs_sample, "shape") else 1
+            rnn_states[aid] = pol.get_initial_state(batch_size)
+
         for step_i in range(rollout_length):
             # build policy inputs
             policy_inputs = {}
@@ -382,6 +390,9 @@ def _worker_eval(args) -> list[dict]:
                 d = dict(step_data[aid])
                 if EpisodeKey.NEXT_OBS in d:
                     d[EpisodeKey.CUR_OBS] = d.pop(EpisodeKey.NEXT_OBS)
+                # inject RNN states
+                d[EpisodeKey.ACTOR_RNN_STATE] = rnn_states[aid][EpisodeKey.ACTOR_RNN_STATE]
+                d[EpisodeKey.CRITIC_RNN_STATE] = rnn_states[aid][EpisodeKey.CRITIC_RNN_STATE]
                 policy_inputs[aid] = d
 
             # compute actions
@@ -417,14 +428,14 @@ def _worker_eval(args) -> list[dict]:
                     except Exception:
                         pass
 
-            # update for next step
+            # update RNN states and env data for next step
             step_data = {}
             for aid in behavior_policies:
                 d = dict(env_rets[aid])
                 if EpisodeKey.ACTOR_RNN_STATE in policy_outputs[aid]:
-                    d[EpisodeKey.ACTOR_RNN_STATE] = policy_outputs[aid][EpisodeKey.ACTOR_RNN_STATE]
+                    rnn_states[aid][EpisodeKey.ACTOR_RNN_STATE] = policy_outputs[aid][EpisodeKey.ACTOR_RNN_STATE]
                 if EpisodeKey.CRITIC_RNN_STATE in policy_outputs[aid]:
-                    d[EpisodeKey.CRITIC_RNN_STATE] = policy_outputs[aid][EpisodeKey.CRITIC_RNN_STATE]
+                    rnn_states[aid][EpisodeKey.CRITIC_RNN_STATE] = policy_outputs[aid][EpisodeKey.CRITIC_RNN_STATE]
                 step_data[aid] = d
 
             if env.is_terminated():
