@@ -137,6 +137,10 @@ echo "Python version: $(python --version)" | tee -a "$LOG_FILE"
 # Otherwise the training script would attach to a previous job's cluster with no free resources
 unset RAY_ADDRESS
 unset RAY_IP
+# Clean up stale Ray session files that may point to a different (now-dead) node,
+# which causes socket.gaierror when ray.init(address="auto") tries DNS resolution.
+ray stop --force 2>/dev/null || true
+rm -rf /tmp/ray/session_latest 2>/dev/null || true
 
 # Set Ray configuration for SLURM environment
 export RAY_memory=$((${SLURM_MEM_PER_NODE:-256} * 1024 * 1024 * 1024))  # Convert GB to bytes
