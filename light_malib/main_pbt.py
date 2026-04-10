@@ -49,25 +49,18 @@ def get_local_ip_address():
 
 
 def start_cluster():
-    try:
-        cluster_start_info = ray.init(address="auto")
-        # If we connected to an existing cluster but it has no free resources (e.g. leftover
-        # from another job), start a fresh local cluster so this job can schedule its actors.
-        available = ray.available_resources()
-        free_cpu = available.get("CPU", 0)
-        if free_cpu == 0:
-            Logger.warning(
-                "Connected to existing cluster but no CPU available (all resources claimed). "
-                "Starting a fresh local Ray cluster for this job."
-            )
-            ray.shutdown()
-            cluster_start_info = ray.init(resources={})
-    except Exception as e:
-        Logger.warning(
-            "Could not connect to existing cluster ({}): {}. "
-            "Starting a fresh local Ray instance.".format(type(e).__name__, e)
-        )
-        cluster_start_info = ray.init(resources={})
+    import os
+
+    ray_temp = os.environ.get("RAY_TMPDIR")
+    init_kwargs = {}
+    if ray_temp:
+        init_kwargs["_temp_dir"] = ray_temp
+
+    # Always start a fresh local cluster. Connecting to an existing cluster
+    # via address="auto" is dangerous on shared nodes: if the other user's
+    # Ray GCS shuts down mid-training, our entire job dies.
+    Logger.warning("Starting a fresh local Ray cluster (isolated mode).")
+    cluster_start_info = ray.init(**init_kwargs)
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)

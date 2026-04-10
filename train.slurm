@@ -134,11 +134,14 @@ echo "Python executable: $(which python)" | tee -a "$LOG_FILE"
 echo "Python version: $(python --version)" | tee -a "$LOG_FILE"
 
 # Ensure this job starts its own Ray cluster (do not connect to an existing one)
-# Otherwise the training script would attach to a previous job's cluster with no free resources
 unset RAY_ADDRESS
 unset RAY_IP
-# Clean up stale Ray session files that may point to a different (now-dead) node,
-# which causes socket.gaierror when ray.init(address="auto") tries DNS resolution.
+
+# Use a job-private temp directory so Ray never discovers another user's session
+export RAY_TMPDIR="/tmp/ray_${USER}_${SLURM_JOB_ID}"
+mkdir -p "$RAY_TMPDIR"
+
+# Best-effort cleanup of our own stale sessions (ignore errors from other users' processes)
 ray stop --force 2>/dev/null || true
 rm -rf /tmp/ray/session_latest 2>/dev/null || true
 
