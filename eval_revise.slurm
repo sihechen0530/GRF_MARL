@@ -105,8 +105,9 @@ if p.exists():
 ")
 
 if [ -z "$CHECKPOINT" ]; then
-    echo "ERROR: No checkpoint found for config $CONFIG_PATH"
-    exit 1
+    echo "WARNING: No checkpoint found for config $CONFIG_PATH"
+    echo "Previous training may have failed before saving any checkpoint. Skipping eval+revise."
+    exit 0
 fi
 echo "Checkpoint: $CHECKPOINT"
 

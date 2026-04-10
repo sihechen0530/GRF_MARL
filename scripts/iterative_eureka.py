@@ -408,7 +408,7 @@ def cmd_slurm_loop(args):
             f"--partition={train_partition}",
         ]
         if prev_job_id:
-            eval_cmd.append(f"--dependency=afterok:{prev_job_id}")
+            eval_cmd.append(f"--dependency=afterany:{prev_job_id}")
 
         eval_cmd.append("eval_revise.slurm")
         eval_cmd.extend([
