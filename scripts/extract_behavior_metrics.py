@@ -316,18 +316,22 @@ def _worker_eval(args) -> list[dict]:
     import os
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
+    from omegaconf import OmegaConf
     from light_malib.algorithm.mappo.policy import MAPPO
     from light_malib.envs.gr_football.env import GRFootballEnv
     from light_malib.utils.desc.task_desc import RolloutDesc
     from light_malib.utils.episode import EpisodeKey
     from collections import OrderedDict
 
+    # env_cfg arrives as a plain dict (for pickling); GRFootballEnv needs attribute access
+    if isinstance(env_cfg, dict):
+        env_cfg = OmegaConf.create(env_cfg)
+
     policy_0 = MAPPO.load(ckpt_dir, env_agent_id="agent_0")
     policy_0.eval()
     if opponent_dir:
         policy_1 = MAPPO.load(opponent_dir, env_agent_id="agent_1")
     else:
-        from light_malib.algorithm.mappo.policy import MAPPO
         policy_1 = MAPPO.load(
             "light_malib/trained_models/gr_football/5_vs_5/built_in",
             env_agent_id="agent_1",
