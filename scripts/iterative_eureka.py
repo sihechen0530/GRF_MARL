@@ -346,16 +346,26 @@ def cmd_slurm_loop(args):
     all_job_ids = []
     prev_job_id = None
 
+    start_with_eval = getattr(args, "start_with_eval", False)
+
+    if start_with_eval:
+        total_jobs = args.num_iterations * (args.train_jobs_per_iter + 1)
+        flow_desc = "[eval+revise] → [train×N] → repeat"
+    else:
+        total_jobs = args.num_iterations * (args.train_jobs_per_iter + 1)
+        flow_desc = "[train×N] → [eval+revise] → repeat"
+
     print("=" * 70)
     print(f"  ITERATIVE EUREKA — SLURM Loop")
     print(f"  Config:        {config_path}")
     print(f"  Iterations:    {args.num_iterations}")
     print(f"  Train jobs/iter: {args.train_jobs_per_iter}")
     print(f"  Eval games:    {args.num_eval_games}")
-    print(f"  Total SLURM jobs: {args.num_iterations * (args.train_jobs_per_iter + 1)}")
+    print(f"  Start with:    {'eval+revise' if start_with_eval else 'training'}")
+    print(f"  Flow:          {flow_desc}")
+    print(f"  Total SLURM jobs: ~{total_jobs}")
     print("=" * 70)
 
-    # Inject conda env name if set
     conda_env = os.environ.get("CONDA_ENV_NAME")
 
     def _sbatch(cmd: list[str]) -> str | None:
@@ -372,12 +382,41 @@ def cmd_slurm_loop(args):
         all_job_ids.append(jid)
         return jid
 
-    for it in range(1, args.num_iterations + 1):
-        print(f"\n--- Iteration {it}/{args.num_iterations} ---")
+    def _submit_eval_revise(iteration: int):
+        nonlocal prev_job_id
+        eval_label = f"{base_name}_iter{iteration}_eval_revise"
+        eval_cmd = [
+            "sbatch",
+            f"--job-name={eval_label}",
+            f"--gres=gpu:1",
+            f"--cpus-per-task={min(train_cpus, 16)}",
+            f"--mem=64G",
+            f"--time=1:00:00",
+            f"--partition={train_partition}",
+        ]
+        if prev_job_id:
+            eval_cmd.append(f"--dependency=afterany:{prev_job_id}")
 
-        # ---- Training segment: N chained jobs ----
+        eval_cmd.append("eval_revise.slurm")
+        eval_cmd.extend([
+            "--config", config_path,
+            "--iteration", str(iteration),
+            "--num-eval-games", str(args.num_eval_games),
+            "--num-eval-workers", str(args.num_eval_workers),
+            "--phi-dir", args.phi_dir,
+            "--scenario-name", args.scenario_name,
+            "--temperature", str(args.temperature),
+        ])
+        if args.hint:
+            eval_cmd.extend(["--hint", args.hint])
+
+        prev_job_id = _sbatch(eval_cmd)
+        print(f"    → Eval+Revise: {prev_job_id}")
+
+    def _submit_train_segment(iteration: int):
+        nonlocal prev_job_id
         for tj in range(1, args.train_jobs_per_iter + 1):
-            job_label = f"{base_name}_iter{it}_train{tj}"
+            job_label = f"{base_name}_iter{iteration}_train{tj}"
             cmd = [
                 "sbatch",
                 f"--job-name={job_label}",
@@ -396,35 +435,15 @@ def cmd_slurm_loop(args):
             prev_job_id = _sbatch(cmd)
             print(f"    → Train job {tj}/{args.train_jobs_per_iter}: {prev_job_id}")
 
-        # ---- Eval + Revise job ----
-        eval_label = f"{base_name}_iter{it}_eval_revise"
-        eval_cmd = [
-            "sbatch",
-            f"--job-name={eval_label}",
-            f"--gres=gpu:1",
-            f"--cpus-per-task={min(train_cpus, 16)}",
-            f"--mem=64G",
-            f"--time=1:00:00",
-            f"--partition={train_partition}",
-        ]
-        if prev_job_id:
-            eval_cmd.append(f"--dependency=afterany:{prev_job_id}")
+    for it in range(1, args.num_iterations + 1):
+        print(f"\n--- Iteration {it}/{args.num_iterations} ---")
 
-        eval_cmd.append("eval_revise.slurm")
-        eval_cmd.extend([
-            "--config", config_path,
-            "--iteration", str(it),
-            "--num-eval-games", str(args.num_eval_games),
-            "--num-eval-workers", str(args.num_eval_workers),
-            "--phi-dir", args.phi_dir,
-            "--scenario-name", args.scenario_name,
-            "--temperature", str(args.temperature),
-        ])
-        if args.hint:
-            eval_cmd.extend(["--hint", args.hint])
-
-        prev_job_id = _sbatch(eval_cmd)
-        print(f"    → Eval+Revise: {prev_job_id}")
+        if start_with_eval:
+            _submit_eval_revise(it)
+            _submit_train_segment(it)
+        else:
+            _submit_train_segment(it)
+            _submit_eval_revise(it)
 
     # Summary
     print("\n" + "=" * 70)
@@ -439,11 +458,17 @@ def cmd_slurm_loop(args):
     else:
         print("(dry-run mode — no jobs were actually submitted)")
 
-    print(f"\nWorkflow per iteration:")
-    print(f"  1. Train ({args.train_jobs_per_iter} jobs × {train_hours}h each)")
-    print(f"  2. Eval {args.num_eval_games} games → extract metrics")
-    print(f"  3. LLM diagnoses + revises phi → overwrites {args.phi_dir}/phi_llm.py")
-    print(f"  4. Next iteration trains with updated phi")
+    order = ("eval+revise → train" if start_with_eval else "train → eval+revise")
+    print(f"\nWorkflow per iteration ({order}):")
+    if start_with_eval:
+        print(f"  1. Eval {args.num_eval_games} games → extract metrics (from existing checkpoint)")
+        print(f"  2. LLM diagnoses + revises phi → overwrites {args.phi_dir}/phi_llm.py")
+        print(f"  3. Train ({args.train_jobs_per_iter} jobs × {train_hours}h each) with updated phi")
+    else:
+        print(f"  1. Train ({args.train_jobs_per_iter} jobs × {train_hours}h each)")
+        print(f"  2. Eval {args.num_eval_games} games → extract metrics")
+        print(f"  3. LLM diagnoses + revises phi → overwrites {args.phi_dir}/phi_llm.py")
+        print(f"  4. Next iteration trains with updated phi")
     print("=" * 70)
 
 
@@ -498,6 +523,9 @@ def main():
     sl.add_argument("--hint", type=str, default="")
     sl.add_argument("--scenario-name", default="GRF 11v11 full game")
     sl.add_argument("--temperature", type=float, default=0.3)
+    sl.add_argument("--start-with-eval", action="store_true",
+                    help="Start each iteration with eval+revise instead of training "
+                         "(useful when checkpoints already exist)")
     sl.add_argument("--no-submit", action="store_true",
                     help="Dry run: print commands without submitting")
 
