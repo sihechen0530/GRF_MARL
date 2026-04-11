@@ -366,7 +366,7 @@ def cmd_slurm_loop(args):
     print(f"  Total SLURM jobs: ~{total_jobs}")
     print("=" * 70)
 
-    conda_env = os.environ.get("CONDA_ENV_NAME")
+    conda_env = getattr(args, "conda_env", None) or os.environ.get("CONDA_ENV_NAME")
 
     def _sbatch(cmd: list[str]) -> str | None:
         """Submit or dry-run an sbatch command. Returns job id or simulated id."""
@@ -523,6 +523,9 @@ def main():
     sl.add_argument("--hint", type=str, default="")
     sl.add_argument("--scenario-name", default="GRF 11v11 full game")
     sl.add_argument("--temperature", type=float, default=0.3)
+    sl.add_argument("--conda-env", default=None,
+                    help="Conda env name or path (e.g. /home/chen.sihe1/.conda/envs/grf_env). "
+                         "Falls back to $CONDA_ENV_NAME env var.")
     sl.add_argument("--start-with-eval", action="store_true",
                     help="Start each iteration with eval+revise instead of training "
                          "(useful when checkpoints already exist)")
