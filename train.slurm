@@ -138,20 +138,26 @@ echo "Python version: $(python --version)" | tee -a "$LOG_FILE"
 unset RAY_ADDRESS
 unset RAY_IP
 
-# Set Ray configuration for SLURM environment
-export RAY_memory=$((${SLURM_MEM_PER_NODE:-256} * 1024 * 1024 * 1024))  # Convert GB to bytes
-export RAY_object_store_memory=$((${SLURM_MEM_PER_NODE:-256} * 1024 * 1024 * 1024 / 2))  # Half of total
+# Per-job Ray temp dir so we never attach to another user's / stale /tmp/ray session
+export RAY_TMPDIR="/tmp/ray_${USER:-user}_${SLURM_JOB_ID:-local}"
+mkdir -p "$RAY_TMPDIR"
+ray stop --force 2>/dev/null || true
+rm -f /tmp/ray/session_latest 2>/dev/null || true
+unset RAY_memory RAY_object_store_memory 2>/dev/null || true
+
 # Only set CUDA_VISIBLE_DEVICES if not already set (e.g. by SLURM when multiple jobs share a node)
-# so each job only sees its allocated GPU(s) and does not clash with others
 if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 fi
 
-# Optional: Configure logging
 export PYTHONUNBUFFERED=1
 
-echo "Ray Memory: $RAY_memory bytes" | tee -a "$LOG_FILE"
+echo "RAY_TMPDIR=$RAY_TMPDIR" | tee -a "$LOG_FILE"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
+echo "SLURM_MEM_PER_NODE: ${SLURM_MEM_PER_NODE:-unset} MB" | tee -a "$LOG_FILE"
+
+python -c "import torch; assert torch.cuda.is_available(), 'No CUDA'; print(f'GPU OK: {torch.cuda.get_device_name(0)}')" \
+    | tee -a "$LOG_FILE" || { echo "CUDA check failed." | tee -a "$LOG_FILE"; exit 1; }
 
 # Dynamically find the latest checkpoint if auto-resume is enabled
 if [ "$AUTO_RESUME" = "true" ] && [ -z "$CHECKPOINT_DIR" ]; then
