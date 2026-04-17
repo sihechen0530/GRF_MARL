@@ -31,7 +31,7 @@ framework:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 1100 #iteration at each psro round
+      max_steps: 4000 #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
