@@ -25,14 +25,16 @@ DEFAULT_SLURM_CONFIG = {
 }
 
 
-def _inject_conda_export_for_sbatch(sbatch_cmd, export_mode="all"):
+def _inject_conda_export_for_sbatch(sbatch_cmd, export_mode="all", conda_env=None):
     """Forward CONDA_ENV_NAME into the job (train.slurm uses conda activate "${CONDA_ENV_NAME:-grf_env}").
 
     export_mode:
       all     --export=ALL,CONDA_ENV_NAME=... (default; can be huge on login nodes)
       minimal --export=NONE,CONDA_ENV_NAME=... (smaller env; job still gets SLURM_* / basic vars from Slurm)
+
+    conda_env: full path or env name; falls back to $CONDA_ENV_NAME if unset.
     """
-    name = os.environ.get("CONDA_ENV_NAME")
+    name = conda_env or os.environ.get("CONDA_ENV_NAME")
     if not name:
         return
     if export_mode == "minimal":
@@ -111,6 +113,7 @@ def submit_training_job(
     job_name=None,
     no_submit=False,
     slurm_export="all",
+    conda_env=None,
 ):
     """Submit a training job using sbatch."""
 
@@ -164,7 +167,7 @@ def submit_training_job(
         f"--time={time_str}",
         f"--partition={slurm_cfg['partition']}"
     ]
-    _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export)
+    _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
     # Add training arguments
     sbatch_cmd.append(slurm_script)
@@ -230,7 +233,12 @@ def list_checkpoints(expr_group=None, expr_name=None):
                         print(f"{checkpoint_dir}")
 
 def chain_submit_jobs(
-    config_path, num_jobs=2, job_name=None, no_submit=False, slurm_export="all"
+    config_path,
+    num_jobs=2,
+    job_name=None,
+    no_submit=False,
+    slurm_export="all",
+    conda_env=None,
 ):
     """Submit a chain of dependent jobs that resume from checkpoints.
 
@@ -297,7 +305,7 @@ def chain_submit_jobs(
             f"--time={time_str}",
             f"--partition={slurm_cfg['partition']}"
         ]
-        _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export)
+        _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
         # Add dependency if not first job
         if prev_job_id:
@@ -381,6 +389,12 @@ def main():
         help="Pass CONDA_ENV_NAME into the batch job: 'minimal' uses --export=NONE,... only "
         "(smaller env; try on login nodes that OOM-kill or reject huge --export=ALL).",
     )
+    submit_parser.add_argument(
+        "--conda-env",
+        default=None,
+        help="Conda env path or name for train.slurm (e.g. /home/.../.conda/envs/grf_env). "
+        "Overrides $CONDA_ENV_NAME when set.",
+    )
 
     # Resume command
     resume_parser = subparsers.add_parser("resume", help="Resume a training job from latest checkpoint")
@@ -405,6 +419,11 @@ def main():
         choices=("all", "minimal"),
         default="all",
         help="Same as submit --slurm-export.",
+    )
+    resume_parser.add_argument(
+        "--conda-env",
+        default=None,
+        help="Same as submit --conda-env.",
     )
 
     # List command
@@ -442,6 +461,11 @@ def main():
         default="all",
         help="Same as submit --slurm-export.",
     )
+    chain_parser.add_argument(
+        "--conda-env",
+        default=None,
+        help="Same as submit --conda-env.",
+    )
 
     args = parser.parse_args()
 
@@ -460,6 +484,7 @@ def main():
             args.job_name,
             args.no_submit,
             slurm_export=args.slurm_export,
+            conda_env=getattr(args, "conda_env", None),
         )
 
     elif args.command == "resume":
@@ -480,6 +505,7 @@ def main():
             args.job_name,
             args.no_submit,
             slurm_export=args.slurm_export,
+            conda_env=getattr(args, "conda_env", None),
         )
 
     elif args.command == "list":
@@ -492,6 +518,7 @@ def main():
             args.job_name,
             args.no_submit,
             slurm_export=args.slurm_export,
+            conda_env=getattr(args, "conda_env", None),
         )
 
 
