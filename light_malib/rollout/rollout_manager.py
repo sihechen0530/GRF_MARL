@@ -214,8 +214,8 @@ class RolloutManager:
                 ray.get(self.traning_manager.train_step.remote())
                 
         except Exception as e:
-            # save model
-            self.save_current_model("{}.exception".format(rollout_epoch))
+            # save model (self.rollout_epoch: local rollout_epoch unset if stopper breaks before first increment)
+            self.save_current_model("{}.exception".format(self.rollout_epoch))
             self.save_best_model_from_policy_server()
             Logger.error(traceback.format_exc())
             raise e
@@ -224,7 +224,7 @@ class RolloutManager:
             f"save the last model(average reward:{reward},average win:{win})"
         )
         # save the last model
-        self.save_current_model("{}.last".format(rollout_epoch))
+        self.save_current_model("{}.last".format(self.rollout_epoch))
         
         self.stop_rollout()
 
@@ -333,8 +333,8 @@ class RolloutManager:
                 self.check_error([_async_training_loop])
 
         except Exception as e:
-            # save model
-            self.save_current_model("{}.exception".format(rollout_epoch))
+            # save model (self.rollout_epoch: local rollout_epoch unset if stopper breaks before first increment)
+            self.save_current_model("{}.exception".format(self.rollout_epoch))
             self.save_best_model_from_policy_server()
             Logger.error(traceback.format_exc())
             raise e
@@ -343,7 +343,7 @@ class RolloutManager:
             f"save the last model(average reward:{reward},average win:{win})"
         )
         # save the last model
-        self.save_current_model("{}.last".format(rollout_epoch))
+        self.save_current_model("{}.last".format(self.rollout_epoch))
 
         # save the best model
         best_policy_desc = self.save_best_model_from_policy_server()

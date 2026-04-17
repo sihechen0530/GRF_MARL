@@ -1,5 +1,6 @@
 # Ray 1.8.0 removed from PyPI; 2.31+ works with this codebase.
-ray>=2.31.0,<3
+# [default] pulls deps needed for runtime_env (raylet agent_manager); plain `ray` can error on clusters.
+ray[default]>=2.31.0,<3
 # 2.0.4 rejected by pip>=24.1 (invalid requires: PyYAML>=5.1.*)
 omegaconf>=2.1.0,<3
 grpcio
