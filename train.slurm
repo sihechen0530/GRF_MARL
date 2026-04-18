@@ -148,17 +148,13 @@ if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 fi
 
-# Unique Ray GCS / head port per Slurm job so concurrent jobs on one node do not fight default :6379.
-# Override with RAY_HEAD_PORT before sbatch if needed. (Modulus collisions are possible but rare.)
+# Ray GCS port: do not use only SLURM_JOB_ID%N (IDs differing by N collide; port may be busy anyway).
+# Default: ask OS for a free port on 127.0.0.1; retry ray start a few times. Override with RAY_HEAD_PORT.
 unset RAY_ADDRESS
-if [ -n "${RAY_HEAD_PORT:-}" ]; then
-    :
-elif [ -n "${SLURM_JOB_ID:-}" ]; then
-    export RAY_HEAD_PORT=$((10000 + SLURM_JOB_ID % 55000))
-else
-    export RAY_HEAD_PORT=$((10000 + $$ % 55000))
-fi
-export RAY_ADDRESS="127.0.0.1:${RAY_HEAD_PORT}"
+
+pick_free_ray_port() {
+    python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1]); s.close()"
+}
 
 export PYTHONUNBUFFERED=1
 
@@ -171,14 +167,40 @@ else
     RAY_NUM_GPU="${SLURM_GPUS_ON_NODE:-1}"
     case "$RAY_NUM_GPU" in ''|*[!0-9]*) RAY_NUM_GPU=1 ;; esac
 fi
-echo "Starting Ray head on port ${RAY_HEAD_PORT} (RAY_ADDRESS=${RAY_ADDRESS}) temp=${RAY_TMPDIR}" | tee -a "$LOG_FILE"
-if ! ray start --head \
-    --port="${RAY_HEAD_PORT}" \
-    --temp-dir="${RAY_TMPDIR}" \
-    --num-cpus="${RAY_NUM_CPU}" \
-    --num-gpus="${RAY_NUM_GPU}" \
-    --disable-usage-stats; then
-    echo "ray start --head failed (port in use or bad args?). See Ray logs under RAY_TMPDIR." | tee -a "$LOG_FILE"
+
+RAY_START_OK=0
+if [ -n "${RAY_HEAD_PORT:-}" ]; then
+    export RAY_ADDRESS="127.0.0.1:${RAY_HEAD_PORT}"
+    echo "Starting Ray head on fixed port ${RAY_HEAD_PORT} (RAY_ADDRESS=${RAY_ADDRESS}) temp=${RAY_TMPDIR}" | tee -a "$LOG_FILE"
+    if ray start --head \
+        --port="${RAY_HEAD_PORT}" \
+        --temp-dir="${RAY_TMPDIR}" \
+        --num-cpus="${RAY_NUM_CPU}" \
+        --num-gpus="${RAY_NUM_GPU}" \
+        --disable-usage-stats 2>&1 | tee -a "$LOG_FILE"; then
+        RAY_START_OK=1
+    fi
+else
+    for _ray_try in 1 2 3 4 5 6 7 8; do
+        export RAY_HEAD_PORT="$(pick_free_ray_port)" || { echo "pick_free_ray_port failed" | tee -a "$LOG_FILE"; break; }
+        export RAY_ADDRESS="127.0.0.1:${RAY_HEAD_PORT}"
+        echo "Starting Ray head try ${_ray_try} on port ${RAY_HEAD_PORT} (RAY_ADDRESS=${RAY_ADDRESS}) temp=${RAY_TMPDIR}" | tee -a "$LOG_FILE"
+        if ray start --head \
+            --port="${RAY_HEAD_PORT}" \
+            --temp-dir="${RAY_TMPDIR}" \
+            --num-cpus="${RAY_NUM_CPU}" \
+            --num-gpus="${RAY_NUM_GPU}" \
+            --disable-usage-stats 2>&1 | tee -a "$LOG_FILE"; then
+            RAY_START_OK=1
+            break
+        fi
+        echo "ray start failed on port ${RAY_HEAD_PORT}; ray stop and retry..." | tee -a "$LOG_FILE"
+        ray stop --force 2>/dev/null || true
+    done
+fi
+
+if [ "$RAY_START_OK" != 1 ]; then
+    echo "ray start --head failed after retries. Logs: $LOG_FILE and $RAY_TMPDIR" | tee -a "$LOG_FILE"
     exit 1
 fi
 
