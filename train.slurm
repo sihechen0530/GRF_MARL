@@ -133,16 +133,14 @@ module load cuda/12.1.1
 echo "Python executable: $(which python)" | tee -a "$LOG_FILE"
 echo "Python version: $(python --version)" | tee -a "$LOG_FILE"
 
-# Ensure this job starts its own Ray cluster (do not connect to an existing one)
-# Otherwise the training script would attach to a previous job's cluster with no free resources
-unset RAY_ADDRESS
+# Ensure this job does not inherit a login-shell Ray address (we set our own below).
 unset RAY_IP
 
 # Per-job Ray temp dir so we never attach to another user's / stale /tmp/ray session
 export RAY_TMPDIR="/tmp/ray_${USER:-user}_${SLURM_JOB_ID:-local}"
 mkdir -p "$RAY_TMPDIR"
 ray stop --force 2>/dev/null || true
-rm -f /tmp/ray/session_latest 2>/dev/null || true
+# Do not rm /tmp/ray/session_latest: on shared nodes that breaks other users' default Ray sessions.
 unset RAY_memory RAY_object_store_memory 2>/dev/null || true
 
 # Only set CUDA_VISIBLE_DEVICES if not already set (e.g. by SLURM when multiple jobs share a node)
@@ -150,9 +148,42 @@ if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 fi
 
+# Unique Ray GCS / head port per Slurm job so concurrent jobs on one node do not fight default :6379.
+# Override with RAY_HEAD_PORT before sbatch if needed. (Modulus collisions are possible but rare.)
+unset RAY_ADDRESS
+if [ -n "${RAY_HEAD_PORT:-}" ]; then
+    :
+elif [ -n "${SLURM_JOB_ID:-}" ]; then
+    export RAY_HEAD_PORT=$((10000 + SLURM_JOB_ID % 55000))
+else
+    export RAY_HEAD_PORT=$((10000 + $$ % 55000))
+fi
+export RAY_ADDRESS="127.0.0.1:${RAY_HEAD_PORT}"
+
 export PYTHONUNBUFFERED=1
 
+# Start Ray head in the background; driver connects via RAY_ADDRESS (see main_pbt.start_cluster).
+RAY_NUM_CPU="${SLURM_CPUS_PER_TASK:-16}"
+# Prefer GPUs visible to this step (SLURM_GPUS_ON_NODE can be the full node count).
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    RAY_NUM_GPU=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
+else
+    RAY_NUM_GPU="${SLURM_GPUS_ON_NODE:-1}"
+    case "$RAY_NUM_GPU" in ''|*[!0-9]*) RAY_NUM_GPU=1 ;; esac
+fi
+echo "Starting Ray head on port ${RAY_HEAD_PORT} (RAY_ADDRESS=${RAY_ADDRESS}) temp=${RAY_TMPDIR}" | tee -a "$LOG_FILE"
+if ! ray start --head \
+    --port="${RAY_HEAD_PORT}" \
+    --temp-dir="${RAY_TMPDIR}" \
+    --num-cpus="${RAY_NUM_CPU}" \
+    --num-gpus="${RAY_NUM_GPU}" \
+    --disable-usage-stats; then
+    echo "ray start --head failed (port in use or bad args?). See Ray logs under RAY_TMPDIR." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
 echo "RAY_TMPDIR=$RAY_TMPDIR" | tee -a "$LOG_FILE"
+echo "RAY_ADDRESS=$RAY_ADDRESS" | tee -a "$LOG_FILE"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
 echo "SLURM_MEM_PER_NODE: ${SLURM_MEM_PER_NODE:-unset} MB" | tee -a "$LOG_FILE"
 
@@ -235,5 +266,9 @@ if [ $EXIT_CODE -eq 0 ] && [ -n "$CHECKPOINT_DIR" ]; then
         cp "$SLURM_LOG_FILE" "$CHECKPOINT_DIR/slurm_resumed_${SLURM_JOB_ID}.log" 2>/dev/null || true
     fi
 fi
+
+# Tear down Ray head started above (ray.shutdown() in Python only disconnects the driver).
+export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/ray_${USER:-user}_${SLURM_JOB_ID:-local}}"
+ray stop --force 2>/dev/null || true
 
 exit $EXIT_CODE

@@ -52,14 +52,25 @@ def start_cluster():
     import os
 
     ray_temp = os.environ.get("RAY_TMPDIR")
+    # train.slurm runs `ray start --head --port=...` then sets RAY_ADDRESS so concurrent
+    # Slurm jobs on one node do not share the default GCS port (historically 6379).
+    ray_address = os.environ.get("RAY_ADDRESS")
+
     init_kwargs = {}
     if ray_temp:
         init_kwargs["_temp_dir"] = ray_temp
+    init_kwargs["ignore_reinit_error"] = True
 
-    # Do not use address="auto" on shared nodes: workers can attach to a foreign Ray that
-    # later dies, or raylet sockets go stale → "Could not connect to socket .../raylet".
-    Logger.warning("Starting a fresh local Ray cluster (isolated; RAY_TMPDIR if set).")
-    cluster_start_info = ray.init(**init_kwargs)
+    if ray_address:
+        Logger.warning(
+            "Connecting to Ray at {} (per-job head from train.slurm).".format(ray_address)
+        )
+        cluster_start_info = ray.init(address=ray_address, **init_kwargs)
+    else:
+        # Do not use address="auto" on shared nodes: workers can attach to a foreign Ray that
+        # later dies, or raylet sockets go stale → "Could not connect to socket .../raylet".
+        Logger.warning("Starting a fresh local Ray cluster (isolated; RAY_TMPDIR if set).")
+        cluster_start_info = ray.init(**init_kwargs)
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)
