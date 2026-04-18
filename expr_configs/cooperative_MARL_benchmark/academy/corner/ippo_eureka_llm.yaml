@@ -124,7 +124,7 @@ rollout_manager:
             enabled: true
             alpha: 0.05
             gamma: 0.99
-            phi_module: generated_phi.phi_llm
+            phi_module: generated_phi.phi_llm_corner
             validate_on_init: false
             left_roles:
               [support_wide, support_wide, midfield_support, midfield_support]
