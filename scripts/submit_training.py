@@ -21,7 +21,10 @@ DEFAULT_SLURM_CONFIG = {
     "cpus_per_task": 16,
     "memory_gb": 128,
     "time_hours": 72,
-    "partition": "gpu"        # gpu, gpu-short, gpu-interactive, sharing
+    "partition": "gpu",       # gpu, gpu-short, gpu-interactive, sharing
+    # Whole node for this allocation → avoids multiple jobs on one node fighting Ray :6379.
+    # Set slurm_config.exclusive: false in YAML if your partition rejects --exclusive.
+    "exclusive": True,
 }
 
 
@@ -135,6 +138,7 @@ def submit_training_job(
     print(f"  Memory: {slurm_cfg['memory_gb']}GB")
     print(f"  Time limit: {slurm_cfg['time_hours']}h")
     print(f"  Partition: {slurm_cfg['partition']}")
+    print(f"  Exclusive node: {slurm_cfg.get('exclusive', False)}")
     print()
 
     # Parse experiment info from config path or provide defaults
@@ -165,8 +169,10 @@ def submit_training_job(
         f"--cpus-per-task={slurm_cfg['cpus_per_task']}",
         f"--mem={slurm_cfg['memory_gb']}G",
         f"--time={time_str}",
-        f"--partition={slurm_cfg['partition']}"
+        f"--partition={slurm_cfg['partition']}",
     ]
+    if slurm_cfg.get("exclusive", False):
+        sbatch_cmd.append("--exclusive")
     _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
     # Add training arguments
@@ -313,8 +319,10 @@ def chain_submit_jobs(
             f"--cpus-per-task={slurm_cfg['cpus_per_task']}",
             f"--mem={slurm_cfg['memory_gb']}G",
             f"--time={time_str}",
-            f"--partition={slurm_cfg['partition']}"
+            f"--partition={slurm_cfg['partition']}",
         ]
+        if slurm_cfg.get("exclusive", False):
+            sbatch_cmd.append("--exclusive")
         _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
         # Add dependency if not first job
