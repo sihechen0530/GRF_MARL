@@ -177,7 +177,7 @@ if [ -n "${RAY_HEAD_PORT:-}" ]; then
         --temp-dir="${RAY_TMPDIR}" \
         --num-cpus="${RAY_NUM_CPU}" \
         --num-gpus="${RAY_NUM_GPU}" \
-        --disable-usage-stats 2>&1 | tee -a "$LOG_FILE"; then
+        2>&1 | tee -a "$LOG_FILE"; then
         RAY_START_OK=1
     fi
 else
@@ -190,7 +190,7 @@ else
             --temp-dir="${RAY_TMPDIR}" \
             --num-cpus="${RAY_NUM_CPU}" \
             --num-gpus="${RAY_NUM_GPU}" \
-            --disable-usage-stats 2>&1 | tee -a "$LOG_FILE"; then
+            2>&1 | tee -a "$LOG_FILE"; then
             RAY_START_OK=1
             break
         fi
