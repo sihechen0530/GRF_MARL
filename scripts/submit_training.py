@@ -239,11 +239,15 @@ def chain_submit_jobs(
     no_submit=False,
     slurm_export="all",
     conda_env=None,
+    fresh_start=False,
 ):
     """Submit a chain of dependent jobs that resume from checkpoints.
 
-    Each job depends on the previous one completing, and automatically
-    resumes from the latest checkpoint.
+    Each job depends on the previous one completing. By default every job
+    passes --auto-resume to train.slurm (resume from latest under expr log dir).
+
+    If fresh_start is True, the *first* job omits --auto-resume so training
+    starts from scratch; later jobs still auto-resume from the new run.
     """
 
     # Validate config file
@@ -266,7 +270,10 @@ def chain_submit_jobs(
     print(f"Chain submitting {num_jobs} dependent jobs")
     print(f"  Experiment: {expr_group}/{expr_name}")
     print(f"  Config: {config_path}")
-    print(f"  Each job will resume from latest checkpoint\n")
+    if fresh_start:
+        print(f"  Job 1: fresh start (no --auto-resume); jobs 2+ resume latest checkpoint\n")
+    else:
+        print(f"  Each job will resume from latest checkpoint\n")
 
     job_ids = []
     prev_job_id = None
@@ -274,7 +281,10 @@ def chain_submit_jobs(
     for job_num in range(1, num_jobs + 1):
         print(f"Submitting job {job_num}/{num_jobs}...")
 
-        print(f"  Job {job_num} will dynamically find the latest checkpoint at execution time")
+        if fresh_start and job_num == 1:
+            print(f"  Job 1: no auto-resume (new timestamp log dir)")
+        else:
+            print(f"  Job {job_num} will dynamically find the latest checkpoint at execution time")
 
         # Get SLURM config
         slurm_cfg = get_slurm_config(config_path)
@@ -314,8 +324,9 @@ def chain_submit_jobs(
         sbatch_cmd.append(slurm_script)
         sbatch_cmd.extend(["--config", config_path])
 
-        # Enable dynamic auto-resume for the slurm script
-        sbatch_cmd.append("--auto-resume")
+        # First job can skip auto-resume so old checkpoints under the same expr_name are ignored.
+        if not (fresh_start and job_num == 1):
+            sbatch_cmd.append("--auto-resume")
 
         print(f"  Command: {' '.join(sbatch_cmd)}\n")
 
@@ -342,10 +353,12 @@ def chain_submit_jobs(
     print(f"  Total jobs: {num_jobs}")
     print(f"  Job IDs: {', '.join(job_ids)}")
     print(f"\nEach job will:")
-    print(f"  1. Wait for previous job to complete")
-    print(f"  2. Find latest checkpoint from: logs/{expr_group}/{expr_name}/")
-    print(f"  3. Resume training from that checkpoint")
-    print(f"  4. Save new checkpoint on completion")
+    print(f"  1. Wait for the previous job to complete (except job 1)")
+    if fresh_start:
+        print(f"  2. Job 1: no --auto-resume (new run); jobs 2+ auto-resume latest under logs/{expr_group}/{expr_name}/")
+    else:
+        print(f"  2. Find latest checkpoint under logs/{expr_group}/{expr_name}/ and resume")
+    print(f"  3. Save a new checkpoint timestamp on completion")
     print(f"\nMonitor with: squeue -u $USER")
     print(f"Cancel all with: scancel {job_ids[0]} (will cancel chain)")
     print("=" * 80)
@@ -466,6 +479,12 @@ def main():
         default=None,
         help="Same as submit --conda-env.",
     )
+    chain_parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="First chained job starts from scratch (omit --auto-resume); jobs 2+ still auto-resume. "
+        "Use after changing reward/phi or when you want a new timestamp under the same expr_name.",
+    )
 
     args = parser.parse_args()
 
@@ -519,6 +538,7 @@ def main():
             args.no_submit,
             slurm_export=args.slurm_export,
             conda_env=getattr(args, "conda_env", None),
+            fresh_start=getattr(args, "fresh", False),
         )
 
 
