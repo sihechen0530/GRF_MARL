@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Overlay six eval curves: IPPO / MAPPO / MAT × (baseline vs LLM-shaped reward).
+Overlay eval curves for IPPO / MAPPO / MAT × (baseline vs LLM-shaped reward).
 
+Each CSV path is optional — pass only the runs you want (e.g. four curves: two algos × baseline + LLM).
 Same algorithm shares one color: baseline dashed, LLM solid.
-Legend: two columns — left = baselines (IPPO / MAPPO / MAT), right = LLM φ (same order).
+Legend (ncol=2): rows pair (baseline | LLM φ) per algorithm in IPPO → MAPPO → MAT order.
 
 CSV format: same as eval_checkpoint.py → eval_results.csv.
 
-Example:
+Example (four lines: IPPO + MAPPO only):
   python scripts/plot_algo_llm_sixway.py \\
-    --title "Academy corner — win rate" \\
-    --output results/corner_sixway.png \\
+    --output results/fourway.png \\
     --max-epoch 1100 \\
-    --ippo-baseline  .../ippo/eval_results.csv \\
-    --ippo-llm       .../ippo_llm/eval_results.csv \\
-    ...
+    --ippo-baseline .../ippo/eval_results.csv \\
+    --ippo-llm .../ippo_llm/eval_results.csv \\
+    --mappo-baseline .../mappo/eval_results.csv \\
+    --mappo-llm .../mappo_llm/eval_results.csv
 """
 from __future__ import annotations
 
@@ -45,6 +46,13 @@ ALGO_COLORS = {
 }
 
 
+def _norm_path(p: str | None) -> str | None:
+    if p is None:
+        return None
+    s = str(p).strip()
+    return s if s else None
+
+
 def _plot_series(ax, rows, metric, ci_key, color, linestyle, marker, markersize, show_ci):
     """Draw one series; return artist for legend (Line2D or ErrorbarContainer)."""
     if not rows:
@@ -68,8 +76,7 @@ def _plot_series(ax, rows, metric, ci_key, color, linestyle, marker, markersize,
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Six-way plot: IPPO/MAPPO/MAT baseline (dashed) vs LLM (solid); "
-        "legend columns = baseline | LLM."
+        description="Optional IPPO/MAPPO/MAT baseline + LLM CSVs; same color per algo, dashed=baseline, solid=LLM."
     )
     ap.add_argument("--title", type=str, default="Eval comparison")
     ap.add_argument("--output", "-o", type=str, required=True, help="Output .png path")
@@ -78,42 +85,37 @@ def main() -> None:
         "--max-epoch",
         type=float,
         default=None,
-        help="Truncate all CSV rows to epoch <= this value AND cap x-axis here (e.g. 1100 when LLM runs stop earlier).",
+        help="Truncate CSV rows to epoch <= this value; if set, also sets x-axis limit to [0, max-epoch].",
+    )
+    ap.add_argument(
+        "--xmax-auto",
+        action="store_true",
+        help="If set (and --max-epoch not set), set x-axis upper limit to max epoch seen in plotted data.",
     )
     ap.add_argument("--no-ci", action="store_true", help="Omit error bars")
     ap.add_argument("--figsize", type=str, default="10,6", help="W,H in inches, e.g. 11,6.5")
-    ap.add_argument(
-        "--legend-loc",
-        type=str,
-        default="upper left",
-        help="Matplotlib legend loc= (default: upper left).",
-    )
+    ap.add_argument("--legend-loc", type=str, default="upper left", help="Matplotlib legend loc=")
     ap.add_argument(
         "--legend-bbox",
         type=str,
         default="0.01,0.99",
         help="bbox_to_anchor as x,y in axes fraction (default: 0.01,0.99).",
     )
-    ap.add_argument(
-        "--legend-alpha",
-        type=float,
-        default=0.92,
-        help="Legend frame alpha (default: 0.92).",
-    )
+    ap.add_argument("--legend-alpha", type=float, default=0.92, help="Legend frame alpha")
 
-    ap.add_argument("--ippo-baseline", type=str, required=True)
-    ap.add_argument("--ippo-llm", type=str, required=True)
-    ap.add_argument("--mappo-baseline", type=str, required=True)
-    ap.add_argument("--mappo-llm", type=str, required=True)
-    ap.add_argument("--mat-baseline", type=str, required=True)
-    ap.add_argument("--mat-llm", type=str, required=True)
+    ap.add_argument("--ippo-baseline", type=str, default=None, help="Optional eval_results.csv")
+    ap.add_argument("--ippo-llm", type=str, default=None)
+    ap.add_argument("--mappo-baseline", type=str, default=None)
+    ap.add_argument("--mappo-llm", type=str, default=None)
+    ap.add_argument("--mat-baseline", type=str, default=None)
+    ap.add_argument("--mat-llm", type=str, default=None)
 
     args = ap.parse_args()
 
     triples = [
-        ("IPPO", args.ippo_baseline, args.ippo_llm),
-        ("MAPPO", args.mappo_baseline, args.mappo_llm),
-        ("MAT", args.mat_baseline, args.mat_llm),
+        ("IPPO", _norm_path(args.ippo_baseline), _norm_path(args.ippo_llm)),
+        ("MAPPO", _norm_path(args.mappo_baseline), _norm_path(args.mappo_llm)),
+        ("MAT", _norm_path(args.mat_baseline), _norm_path(args.mat_llm)),
     ]
 
     ci_map = {"win_rate": "win_ci", "reward_mean": "reward_ci", "goal_mean": "goal_ci"}
@@ -123,30 +125,51 @@ def main() -> None:
     w, h = (float(x) for x in args.figsize.split(","))
     fig, ax = plt.subplots(figsize=(w, h))
 
-    # Interleave per row for legend ncol=2: (baseline_i, llm_i) so col0 = all baseline, col1 = all LLM
     legend_handles = []
     legend_labels = []
     ms = 4.0
     show_ci = not args.no_ci
+    max_epoch_seen = 0.0
+    n_curves = 0
 
     for algo, path_b, path_l in triples:
-        for p, tag in ((path_b, "baseline"), (path_l, "LLM")):
-            if not os.path.isfile(p):
-                print(f"[ERROR] Missing CSV ({algo} {tag}): {p}", file=sys.stderr)
-                sys.exit(1)
-        rb = truncate_series(read_eval_csv(path_b), args.max_epoch)
-        rl = truncate_series(read_eval_csv(path_l), args.max_epoch)
-        print(f"  {algo}: baseline {len(rb)} pts, LLM {len(rl)} pts")
-
         color = ALGO_COLORS[algo]
-        hb = _plot_series(ax, rb, args.metric, ci_key, color, "--", "o", ms, show_ci)
-        hl = _plot_series(ax, rl, args.metric, ci_key, color, "-", "s", ms, show_ci)
-        if hb is not None:
-            legend_handles.append(hb)
-            legend_labels.append(f"{algo} (baseline)")
-        if hl is not None:
-            legend_handles.append(hl)
-            legend_labels.append(f"{algo} (LLM φ)")
+
+        if path_b is not None:
+            if not os.path.isfile(path_b):
+                print(f"[ERROR] File not found ({algo} baseline): {path_b}", file=sys.stderr)
+                sys.exit(1)
+            rb = truncate_series(read_eval_csv(path_b), args.max_epoch)
+            if rb:
+                max_epoch_seen = max(max_epoch_seen, max(r["epoch"] for r in rb))
+            hb = _plot_series(ax, rb, args.metric, ci_key, color, "--", "o", ms, show_ci)
+            if hb is not None:
+                legend_handles.append(hb)
+                legend_labels.append(f"{algo} (baseline)")
+                n_curves += 1
+                print(f"  {algo} baseline: {len(rb)} pts from {path_b}")
+            else:
+                print(f"  [WARN] {algo} baseline CSV empty after truncate: {path_b}")
+
+        if path_l is not None:
+            if not os.path.isfile(path_l):
+                print(f"[ERROR] File not found ({algo} LLM): {path_l}", file=sys.stderr)
+                sys.exit(1)
+            rl = truncate_series(read_eval_csv(path_l), args.max_epoch)
+            if rl:
+                max_epoch_seen = max(max_epoch_seen, max(r["epoch"] for r in rl))
+            hl = _plot_series(ax, rl, args.metric, ci_key, color, "-", "s", ms, show_ci)
+            if hl is not None:
+                legend_handles.append(hl)
+                legend_labels.append(f"{algo} (LLM φ)")
+                n_curves += 1
+                print(f"  {algo} LLM: {len(rl)} pts from {path_l}")
+            else:
+                print(f"  [WARN] {algo} LLM CSV empty after truncate: {path_l}")
+
+    if n_curves == 0:
+        print("[ERROR] No curves plotted — provide at least one valid --*-baseline or --*-llm CSV.", file=sys.stderr)
+        sys.exit(1)
 
     ax.set_xlabel("Training epoch", fontsize=12)
     ax.set_ylabel(ylabel_map[args.metric], fontsize=12)
@@ -155,14 +178,16 @@ def main() -> None:
         ax.set_ylim(-0.05, 1.05)
     if args.max_epoch is not None:
         ax.set_xlim(0, float(args.max_epoch))
+    elif args.xmax_auto and max_epoch_seen > 0:
+        ax.set_xlim(0, max_epoch_seen * 1.02)
     ax.grid(True, alpha=0.3)
 
-    # ncol=2 + order [b0,l0,b1,l1,...] → column 0 = baselines, column 1 = LLM
+    ncol = 2 if len(legend_handles) >= 2 else 1
     bx, by = (float(x.strip()) for x in args.legend_bbox.split(","))
     ax.legend(
         legend_handles,
         legend_labels,
-        ncol=2,
+        ncol=ncol,
         loc=args.legend_loc,
         bbox_to_anchor=(bx, by),
         borderaxespad=0.0,
@@ -179,7 +204,7 @@ def main() -> None:
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved: {out}")
+    print(f"Saved: {out} ({n_curves} curves)")
 
 
 if __name__ == "__main__":
