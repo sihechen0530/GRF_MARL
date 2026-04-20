@@ -100,11 +100,15 @@ def start_cluster(use_distributed: bool = False):
         # (port 6379 is Ray's default and would be claimed by the first job).
         ray.shutdown()
 <<<<<<< HEAD
+<<<<<<< HEAD
         cluster_start_info = ray.init(resources={})
 >>>>>>> e9b8823 (refactor setting log and output directory)
 =======
         cluster_start_info = ray.init(resources={}, port=0)
 >>>>>>> 0068ad1 (improve training configuration)
+=======
+        cluster_start_info = ray.init(resources={}, _temp_dir=f"/tmp/ray_{os.getpid()}")
+>>>>>>> b444781 (fix ray)
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)
