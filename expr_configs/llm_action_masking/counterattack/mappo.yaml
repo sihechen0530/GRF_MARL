@@ -1,6 +1,5 @@
 expr_group: gr_football
 expr_name: llm_mask_academy_counterattack_mappo
-log_dir: ./logs/llm_action_masking
 seed: 0
 eval_only: False            #True if only want evaluation
 

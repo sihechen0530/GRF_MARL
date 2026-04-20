@@ -67,6 +67,7 @@ def get_slurm_config(config_path):
 
     return config
 
+<<<<<<< HEAD
 
 def _log_base_from_training_cfg(cfg):
     """Same layout as train.slurm auto-resume: <log_dir>/<expr_group>/<expr_name>."""
@@ -86,6 +87,10 @@ def _log_base_from_training_cfg(cfg):
 
 def find_latest_checkpoint(expr_group, expr_name, log_dir="logs"):
     """Find the latest run directory (timestamp folder) under logs/<group>/<name>."""
+=======
+def find_latest_checkpoint(expr_group, expr_name, log_dir="logs"):
+    """Find the latest checkpoint directory for an experiment."""
+>>>>>>> e9b8823 (refactor setting log and output directory)
     log_base = Path(log_dir) / expr_group / expr_name
 
     if not log_base.exists():
@@ -99,6 +104,7 @@ def find_latest_checkpoint(expr_group, expr_name, log_dir="logs"):
     return str(checkpoints[-1])
 
 
+<<<<<<< HEAD
 def find_latest_checkpoint_from_config(config_path):
     """Resolve latest checkpoint using expr_group / expr_name / log_dir in the yaml."""
     cfg = load_config_file(config_path)
@@ -118,6 +124,58 @@ def submit_training_job(
     slurm_export="all",
     conda_env=None,
 ):
+=======
+def get_expr_info(config_path):
+    """Read expr_group, expr_name, and log_dir directly from the config file."""
+    cfg = load_config_file(config_path)
+    expr_group = cfg.get("expr_group", "gr_football")
+    expr_name = cfg.get("expr_name", Path(config_path).stem)
+    log_dir = cfg.get("log_dir", "logs").lstrip("./").rstrip("/") or "logs"
+    return expr_group, expr_name, log_dir
+
+def submit_eval_job(config_path, run_dir=None, depends_on=None, job_name=None, no_submit=False):
+    """Submit an evaluation job, optionally dependent on a training job."""
+    eval_script = "eval.slurm"
+    if not os.path.exists(eval_script):
+        print(f"Error: SLURM eval script not found: {eval_script}")
+        sys.exit(1)
+
+    if job_name is None:
+        config_name = os.path.basename(config_path).replace(".yaml", "")
+        job_name = f"eval_{config_name}"
+
+    sbatch_cmd = [
+        "sbatch",
+        f"--job-name={job_name}",
+    ]
+
+    if depends_on:
+        sbatch_cmd.append(f"--dependency=afterany:{depends_on}")
+
+    sbatch_cmd.append(eval_script)
+    sbatch_cmd.extend(["--config", config_path])
+    if run_dir:
+        sbatch_cmd.extend(["--run-dir", run_dir])
+
+    print(f"Submitting eval job (depends on training job {depends_on})...")
+    print(f"Command: {' '.join(sbatch_cmd)}")
+
+    if no_submit:
+        print("(--no-submit flag set, not submitting)")
+        return None
+
+    try:
+        result = subprocess.run(sbatch_cmd, capture_output=True, text=True, check=True)
+        job_id = result.stdout.strip().split()[-1]
+        print(f"Eval job submitted. Job ID: {job_id}")
+        return job_id
+    except subprocess.CalledProcessError as e:
+        print(f"Error submitting eval job: {e.stderr}")
+        sys.exit(1)
+
+
+def submit_training_job(config_path, checkpoint_dir=None, job_name=None, no_submit=False):
+>>>>>>> e9b8823 (refactor setting log and output directory)
     """Submit a training job using sbatch."""
 
     # Validate config file
@@ -181,9 +239,9 @@ def submit_training_job(
 
     if checkpoint_dir:
         if not os.path.exists(checkpoint_dir):
-            print(f"Error: Checkpoint directory not found: {checkpoint_dir}")
+            print(f"Error: Resume directory not found: {checkpoint_dir}")
             sys.exit(1)
-        sbatch_cmd.extend(["--checkpoint", checkpoint_dir])
+        sbatch_cmd.extend(["--resume", checkpoint_dir])
         print(f"Submitting training job to resume from: {checkpoint_dir}")
     else:
         print(f"Submitting fresh training job")
@@ -238,6 +296,7 @@ def list_checkpoints(expr_group=None, expr_name=None):
                     if config_file.exists():
                         print(f"{checkpoint_dir}")
 
+<<<<<<< HEAD
 def chain_submit_jobs(
     config_path,
     num_jobs=2,
@@ -247,6 +306,9 @@ def chain_submit_jobs(
     conda_env=None,
     fresh_start=False,
 ):
+=======
+def chain_submit_jobs(config_path, num_jobs=2, job_name=None, no_submit=False, with_eval=True):
+>>>>>>> e9b8823 (refactor setting log and output directory)
     """Submit a chain of dependent jobs that resume from checkpoints.
 
     Each job depends on the previous one completing. By default every job
@@ -261,17 +323,7 @@ def chain_submit_jobs(
         print(f"Error: Config file not found: {config_path}")
         sys.exit(1)
 
-    # Extract experiment info from config path
-    config_parts = Path(config_path).parts
-    if len(config_parts) < 3:
-        print("Error: Cannot determine experiment from config path")
-        sys.exit(1)
-
-    expr_group = config_parts[1]
-    if "benchmark" in config_parts[2]:
-        expr_name = "benchmark_" + config_parts[-2] + "_" + config_parts[-1].replace(".yaml", "")
-    else:
-        expr_name = "_".join(config_parts[2:-1]) + "_" + config_parts[-1].replace(".yaml", "")
+    expr_group, expr_name, log_dir = get_expr_info(config_path)
 
     print(f"Chain submitting {num_jobs} dependent jobs")
     print(f"  Experiment: {expr_group}/{expr_name}")
@@ -355,18 +407,32 @@ def chain_submit_jobs(
                     print("sbatch stderr:", e.stderr)
                 sys.exit(1)
 
+    # Submit eval job dependent on last training job
+    if with_eval and job_ids:
+        last_job_id = job_ids[-1] if not no_submit else None
+        eval_name = f"{job_name}_eval" if job_name else "marl_chain_eval"
+        print(f"\nSubmitting eval job after last training job...")
+        submit_eval_job(config_path, None, last_job_id, eval_name, no_submit)
+
     # Print summary
     print("=" * 80)
     print(f"Chain submission complete:")
     print(f"  Total jobs: {num_jobs}")
     print(f"  Job IDs: {', '.join(job_ids)}")
     print(f"\nEach job will:")
+<<<<<<< HEAD
     print(f"  1. Wait for the previous job to complete (except job 1)")
     if fresh_start:
         print(f"  2. Job 1: no --auto-resume (new run); jobs 2+ auto-resume latest under logs/{expr_group}/{expr_name}/")
     else:
         print(f"  2. Find latest checkpoint under logs/{expr_group}/{expr_name}/ and resume")
     print(f"  3. Save a new checkpoint timestamp on completion")
+=======
+    print(f"  1. Wait for previous job to complete")
+    print(f"  2. Find latest checkpoint from: {log_dir}/{expr_group}/{expr_name}/")
+    print(f"  3. Resume training from that checkpoint")
+    print(f"  4. Save new checkpoint on completion")
+>>>>>>> e9b8823 (refactor setting log and output directory)
     print(f"\nMonitor with: squeue -u $USER")
     print(f"Cancel all with: scancel {job_ids[0]} (will cancel chain)")
     print("=" * 80)
@@ -382,22 +448,26 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Submit command
-    submit_parser = subparsers.add_parser("submit", help="Submit a new training job")
+    submit_parser = subparsers.add_parser("submit", help="Submit a training job, resuming from latest run if one exists")
     submit_parser.add_argument(
         "--config", type=str, required=True,
         help="Path to training config file"
     )
     submit_parser.add_argument(
-        "--checkpoint", type=str, default=None,
-        help="Checkpoint directory to resume from (optional)"
+        "--run-dir", type=str, default=None,
+        help="Specific run directory to resume from"
     )
     submit_parser.add_argument(
-        "--auto-resume", action="store_true",
-        help="Automatically find and resume from latest checkpoint"
+        "--fresh", action="store_true",
+        help="Force a fresh training run, ignoring any existing runs"
     )
     submit_parser.add_argument(
         "--job-name", type=str, default=None,
         help="SLURM job name"
+    )
+    submit_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after training"
     )
     submit_parser.add_argument(
         "--no-submit", action="store_true",
@@ -418,18 +488,22 @@ def main():
     )
 
     # Resume command
-    resume_parser = subparsers.add_parser("resume", help="Resume a training job from latest checkpoint")
+    resume_parser = subparsers.add_parser("resume", help="Resume training from the latest run directory")
     resume_parser.add_argument(
         "--config", type=str, required=True,
         help="Path to training config file"
     )
     resume_parser.add_argument(
-        "--checkpoint", type=str, default=None,
-        help="Specific checkpoint directory (if not specified, uses latest)"
+        "--run-dir", type=str, default=None,
+        help="Specific run directory to resume from (if not specified, uses latest)"
     )
     resume_parser.add_argument(
         "--job-name", type=str, default=None,
         help="SLURM job name"
+    )
+    resume_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after training"
     )
     resume_parser.add_argument(
         "--no-submit", action="store_true",
@@ -473,6 +547,10 @@ def main():
         help="SLURM job name (will be appended with _part1, _part2, etc)"
     )
     chain_parser.add_argument(
+        "--no-eval", action="store_true",
+        help="Skip submitting the dependent eval job after the last training job"
+    )
+    chain_parser.add_argument(
         "--no-submit", action="store_true",
         help="Print the commands without submitting"
     )
@@ -497,6 +575,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "submit":
+<<<<<<< HEAD
         checkpoint = args.checkpoint
         if args.auto_resume and not checkpoint:
             checkpoint = find_latest_checkpoint_from_config(args.config)
@@ -534,11 +613,41 @@ def main():
             slurm_export=args.slurm_export,
             conda_env=getattr(args, "conda_env", None),
         )
+=======
+        run_dir = args.run_dir
+        if not run_dir and not args.fresh:
+            expr_group, expr_name, log_dir = get_expr_info(args.config)
+            run_dir = find_latest_checkpoint(expr_group, expr_name, log_dir)
+            if run_dir:
+                print(f"Found existing run, resuming: {run_dir}")
+            else:
+                print("No existing run found, starting fresh.")
+
+        train_job_id = submit_training_job(args.config, run_dir, args.job_name, args.no_submit)
+        if not args.no_eval:
+            submit_eval_job(args.config, run_dir, train_job_id, args.job_name, args.no_submit)
+
+    elif args.command == "resume":
+        run_dir = args.run_dir
+        if not run_dir:
+            expr_group, expr_name, log_dir = get_expr_info(args.config)
+            run_dir = find_latest_checkpoint(expr_group, expr_name, log_dir)
+            if run_dir:
+                print(f"Found latest run: {run_dir}")
+            else:
+                print(f"No run found for {expr_group}/{expr_name} in {log_dir}/")
+                sys.exit(1)
+
+        train_job_id = submit_training_job(args.config, run_dir, args.job_name, args.no_submit)
+        if not args.no_eval:
+            submit_eval_job(args.config, run_dir, train_job_id, args.job_name, args.no_submit)
+>>>>>>> e9b8823 (refactor setting log and output directory)
 
     elif args.command == "list":
         list_checkpoints(args.group, args.name)
 
     elif args.command == "chain-submit":
+<<<<<<< HEAD
         chain_submit_jobs(
             args.config,
             args.num_jobs,
@@ -548,6 +657,10 @@ def main():
             conda_env=getattr(args, "conda_env", None),
             fresh_start=getattr(args, "fresh", False),
         )
+=======
+        chain_submit_jobs(args.config, args.num_jobs, args.job_name, args.no_submit,
+                          with_eval=not args.no_eval)
+>>>>>>> e9b8823 (refactor setting log and output directory)
 
 
 if __name__ == "__main__":

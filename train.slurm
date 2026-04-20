@@ -19,22 +19,10 @@
 #   For faster scheduling of short jobs: Add --partition=gpu-short (max 2h)
 #   To use H200 GPU: Add --gres=gpu:h200
 #
-# This script submits a training job using sbatch with support for:
-#   - Fresh training runs
-#   - Continued training from existing checkpoints
-#   - Configurable resources via YAML config files
-#   - Distributed Ray cluster setup
-#
 # Usage:
-#   sbatch train.slurm --config <config_path> [--checkpoint <checkpoint_dir>]
-#
-# Examples:
-#   # Fresh training
-#   sbatch train.slurm --config expr_configs/cooperative_MARL_benchmark/academy/3_vs_1_with_keeper/ippo.yaml
-#
-#   # Continue training from checkpoint
-#   sbatch train.slurm --config expr_configs/cooperative_MARL_benchmark/academy/3_vs_1_with_keeper/ippo.yaml \
-#       --checkpoint logs/gr_football/benchmark_academy_3_vs_1_with_keeper_ippo/2024-01-15-10-30-45
+#   sbatch train.slurm --config <config_path>
+#   sbatch train.slurm --config <config_path> --resume          # resume from latest run
+#   sbatch train.slurm --config <config_path> --resume <dir>    # resume from specific dir
 # ============================================================================
 
 set -e  # Exit on error
@@ -42,7 +30,7 @@ set -o pipefail  # python | tee must propagate failure (otherwise job shows SUCC
 
 # Parse command-line arguments
 CONFIG_PATH=""
-CHECKPOINT_DIR=""
+RESUME_DIR=""      # explicit dir to resume from (optional)
 AUTO_RESUME="false"
 
 while [[ $# -gt 0 ]]; do
@@ -51,9 +39,15 @@ while [[ $# -gt 0 ]]; do
             CONFIG_PATH="$2"
             shift 2
             ;;
-        --checkpoint)
-            CHECKPOINT_DIR="$2"
-            shift 2
+        --resume)
+            AUTO_RESUME="true"
+            # Optional: explicit directory after --resume
+            if [[ -n "${2:-}" && "${2}" != --* ]]; then
+                RESUME_DIR="$2"
+                shift 2
+            else
+                shift 1
+            fi
             ;;
         --auto-resume)
             AUTO_RESUME="true"
@@ -69,7 +63,6 @@ done
 # Validation
 if [ -z "$CONFIG_PATH" ]; then
     echo "Error: --config argument is required"
-    echo "Usage: sbatch train.slurm --config <config_path> [--checkpoint <checkpoint_dir>]"
     exit 1
 fi
 
@@ -78,37 +71,58 @@ if [ ! -f "$CONFIG_PATH" ]; then
     exit 1
 fi
 
-if [ -n "$CHECKPOINT_DIR" ] && [ ! -d "$CHECKPOINT_DIR" ]; then
-    echo "Error: Checkpoint directory not found at $CHECKPOINT_DIR"
+if [ -n "$RESUME_DIR" ] && [ ! -d "$RESUME_DIR" ]; then
+    echo "Error: Resume directory not found at $RESUME_DIR"
     exit 1
 fi
 
 # Setup paths
-# Use SLURM_SUBMIT_DIR which is the directory where sbatch was called
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-.}"
 cd "$PROJECT_ROOT" || exit 1
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
+# Parse experiment metadata from config (no conda needed, just grep)
+EXPR_NAME=$(grep '^expr_name:' "$CONFIG_PATH" | awk '{print $2}')
+EXPR_GROUP=$(grep '^expr_group:' "$CONFIG_PATH" | awk '{print $2}')
+EXPR_GROUP="${EXPR_GROUP:-gr_football}"
+EXPR_BASE="$PROJECT_ROOT/logs/$EXPR_GROUP/$EXPR_NAME"
 
-# Setup logging
-LOG_FILE="logs/training_${SLURM_JOB_ID}.log"
-{
-    echo "=========================================="
-    echo "Training Job Started"
-    echo "=========================================="
-    echo "Job ID: $SLURM_JOB_ID"
-    echo "Node: $SLURMD_NODENAME"
-    echo "GPUs: $SLURM_GPUS_ON_NODE"
-    echo "Config: $CONFIG_PATH"
-    if [ -n "$CHECKPOINT_DIR" ]; then
-        echo "Resuming from: $CHECKPOINT_DIR"
+# Determine experiment output directory
+if [ -n "$RESUME_DIR" ]; then
+    # Explicit resume directory provided
+    EXPR_LOG_DIR="$(cd "$RESUME_DIR" && pwd)"
+elif [ "$AUTO_RESUME" = "true" ]; then
+    # Find latest existing run dir; fall back to fresh if none exists
+    LATEST=$(ls -1dt "$EXPR_BASE"/????-??-??-??-??-?? 2>/dev/null | head -1)
+    if [ -n "$LATEST" ]; then
+        EXPR_LOG_DIR="$LATEST"
     else
-        echo "Fresh training run"
+        EXPR_LOG_DIR="$EXPR_BASE/$(date +%Y-%m-%d-%H-%M-%S)"
     fi
-    echo "Start time: $(date)"
-    echo "=========================================="
-} | tee "$LOG_FILE"
+else
+    # Fresh run
+    EXPR_LOG_DIR="$EXPR_BASE/$(date +%Y-%m-%d-%H-%M-%S)"
+fi
+
+mkdir -p "$EXPR_LOG_DIR"
+
+# Redirect all subsequent output (stdout + stderr) to the experiment directory
+exec > "$EXPR_LOG_DIR/slurm_${SLURM_JOB_ID}.log" 2>&1
+
+echo "=========================================="
+echo "Training Job Started"
+echo "=========================================="
+echo "Job ID:     $SLURM_JOB_ID"
+echo "Node:       $SLURMD_NODENAME"
+echo "GPUs:       $SLURM_GPUS_ON_NODE"
+echo "Config:     $CONFIG_PATH"
+echo "Output dir: $EXPR_LOG_DIR"
+if [ -d "$EXPR_LOG_DIR" ] && [ "$(ls -A "$EXPR_LOG_DIR" 2>/dev/null | grep -v "slurm_")" ]; then
+    echo "Mode:       resume"
+else
+    echo "Mode:       fresh"
+fi
+echo "Start time: $(date)"
+echo "=========================================="
 
 # Conda: default name grf_env. Use full path if that env lives under another user, e.g.:
 #   export CONDA_ENV_NAME=/home/chen.sihe1/.conda/envs/grf_env
@@ -125,11 +139,9 @@ export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 # Load required modules (adjust for your HPC environment)
 module load cuda/12.1.1
-# module load cudnn/8.6.0
-# module load python/3.10
 
-echo "Python executable: $(which python)" | tee -a "$LOG_FILE"
-echo "Python version: $(python --version)" | tee -a "$LOG_FILE"
+echo "Python executable: $(which python)"
+echo "Python version: $(python --version)"
 
 # Do not attach to a Ray cluster left over in the shell environment.
 unset RAY_ADDRESS
@@ -202,10 +214,9 @@ fi
 echo "" | tee -a "$LOG_FILE"
 echo "Running: $TRAIN_CMD" | tee -a "$LOG_FILE"
 echo "=========================================="
-echo "" | tee -a "$LOG_FILE"
+echo ""
 
-# Run training
-if eval "$TRAIN_CMD" 2>&1 | tee -a "$LOG_FILE"; then
+if eval "$TRAIN_CMD"; then
     TRAIN_STATUS="SUCCESS"
     EXIT_CODE=0
 else
@@ -213,24 +224,13 @@ else
     EXIT_CODE=$?
 fi
 
-# Final logging
-{
-    echo ""
-    echo "=========================================="
-    echo "Training Job Finished"
-    echo "=========================================="
-    echo "Status: $TRAIN_STATUS"
-    echo "Exit Code: $EXIT_CODE"
-    echo "End time: $(date)"
-    echo "=========================================="
-} | tee -a "$LOG_FILE"
-
-# Move SLURM logs to experiment directory if training succeeded
-if [ $EXIT_CODE -eq 0 ] && [ -n "$CHECKPOINT_DIR" ]; then
-    SLURM_LOG_FILE="logs/slurm_${SLURM_JOB_ID}.log"
-    if [ -f "$SLURM_LOG_FILE" ]; then
-        cp "$SLURM_LOG_FILE" "$CHECKPOINT_DIR/slurm_resumed_${SLURM_JOB_ID}.log" 2>/dev/null || true
-    fi
-fi
+echo ""
+echo "=========================================="
+echo "Training Job Finished"
+echo "=========================================="
+echo "Status:    $TRAIN_STATUS"
+echo "Exit Code: $EXIT_CODE"
+echo "End time:  $(date)"
+echo "=========================================="
 
 exit $EXIT_CODE
