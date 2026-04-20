@@ -59,6 +59,18 @@ from light_malib.utils.cfg import load_cfg
 from light_malib.utils.logger import Logger
 
 
+def _safe_video_prefix(prefix: str) -> str:
+    """Allow e.g. 'baseline_' or 'llm' for filenames; strip path separators."""
+    p = (prefix or "").strip()
+    if not p:
+        return ""
+    for bad in (os.sep, "\\", ":"):
+        p = p.replace(bad, "_")
+    if not p.endswith("_"):
+        p += "_"
+    return p
+
+
 def discover_checkpoints(run_dir, agent_id="agent_0", epoch_interval=None):
     """Find all checkpoint directories under a run directory."""
     agent_dir = os.path.join(run_dir, agent_id)
@@ -177,6 +189,7 @@ def render_with_frames(
     fps=10,
     wins_only=False,
     max_attempts=80,
+    video_prefix="",
 ):
     """
     Capture RGB frames from GRF observations and assemble into MP4.
@@ -185,6 +198,7 @@ def render_with_frames(
 
     If wins_only: roll until num_episodes wins are saved as win_000.mp4, ...
     (non-win attempts are not written). max_attempts caps total tries.
+    video_prefix: prepended to output mp4 names (e.g. 'baseline' -> baseline_win_000.mp4).
     """
     try:
         import cv2
@@ -214,6 +228,7 @@ def render_with_frames(
     rollout_length = cfg.rollout_manager.worker.eval_rollout_length
     n_left = scenario_config["number_of_left_players_agent_controls"]
     n_right = scenario_config["number_of_right_players_agent_controls"]
+    pfx = _safe_video_prefix(video_prefix)
 
     wins = []
     saved_wins = 0
@@ -319,10 +334,10 @@ def render_with_frames(
 
         if frames:
             if wins_only:
-                video_path = os.path.join(output_dir, f"win_{saved_wins:03d}.mp4")
+                video_path = os.path.join(output_dir, f"{pfx}win_{saved_wins:03d}.mp4")
             else:
                 video_path = os.path.join(
-                    output_dir, f"episode_{attempt - 1:03d}_{outcome.lower()}.mp4"
+                    output_dir, f"{pfx}episode_{attempt - 1:03d}_{outcome.lower()}.mp4"
                 )
             h, w, _ = frames[0].shape
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -392,6 +407,7 @@ def render_with_rollout_func(
     save_dumps,
     wins_only=False,
     max_attempts=80,
+    video_prefix="",
 ):
     """
     Use the project's own rollout_func with GRF's native video writer.
@@ -399,6 +415,7 @@ def render_with_rollout_func(
 
     wins_only: keep rolling until num_episodes wins are collected; copy only winning
     episode videos as win_000.mp4, ... Non-win attempt dirs are removed.
+    video_prefix: final mp4 names become {prefix}win_000.mp4 (see _safe_video_prefix).
     """
     from light_malib.envs.gr_football.env import GRFootballEnv
     from light_malib.rollout.rollout_func import rollout_func
@@ -416,6 +433,7 @@ def render_with_rollout_func(
         "agent_1": ("policy_1", policy_1),
     }
 
+    pfx = _safe_video_prefix(video_prefix)
     wins = []
     saved_wins = 0
     attempt = 0
@@ -495,7 +513,7 @@ def render_with_rollout_func(
         if wins_only and win_val:
             mp4s = [p for p in copied if p.endswith(".mp4")]
             if mp4s:
-                dst = os.path.join(output_dir, f"win_{saved_wins:03d}.mp4")
+                dst = os.path.join(output_dir, f"{pfx}win_{saved_wins:03d}.mp4")
                 try:
                     shutil.move(mp4s[0], dst)
                     Logger.info(f"  Saved: {dst}")
@@ -583,6 +601,13 @@ On headless machines, wrap the command with xvfb:
         default=80,
         help="With --wins-only, max environment resets before giving up (default: 80).",
     )
+    parser.add_argument(
+        "--video-prefix",
+        type=str,
+        default="",
+        help="Prefix for saved mp4 names in this run, e.g. 'baseline' or 'llm' -> baseline_win_000.mp4. "
+        "Use when multiple renders share the same --output_dir.",
+    )
     args = parser.parse_args()
 
     if args.checkpoint is None and args.run_dir is None:
@@ -636,6 +661,7 @@ On headless machines, wrap the command with xvfb:
                 args.save_dumps,
                 wins_only=args.wins_only,
                 max_attempts=args.max_attempts,
+                video_prefix=args.video_prefix,
             )
         elif args.mode == "frames":
             render_with_frames(
@@ -647,6 +673,7 @@ On headless machines, wrap the command with xvfb:
                 args.fps,
                 wins_only=args.wins_only,
                 max_attempts=args.max_attempts,
+                video_prefix=args.video_prefix,
             )
 
     print(f"\nAll videos saved to: {args.output_dir}")
