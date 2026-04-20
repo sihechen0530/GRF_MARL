@@ -82,6 +82,24 @@ def main() -> None:
     )
     ap.add_argument("--no-ci", action="store_true", help="Omit error bars")
     ap.add_argument("--figsize", type=str, default="10,6", help="W,H in inches, e.g. 11,6.5")
+    ap.add_argument(
+        "--legend-loc",
+        type=str,
+        default="upper left",
+        help="Matplotlib legend loc= (default: upper left).",
+    )
+    ap.add_argument(
+        "--legend-bbox",
+        type=str,
+        default="0.01,0.99",
+        help="bbox_to_anchor as x,y in axes fraction (default: 0.01,0.99).",
+    )
+    ap.add_argument(
+        "--legend-alpha",
+        type=float,
+        default=0.92,
+        help="Legend frame alpha (default: 0.92).",
+    )
 
     ap.add_argument("--ippo-baseline", type=str, required=True)
     ap.add_argument("--ippo-llm", type=str, required=True)
@@ -140,13 +158,19 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
 
     # ncol=2 + order [b0,l0,b1,l1,...] → column 0 = baselines, column 1 = LLM
+    bx, by = (float(x.strip()) for x in args.legend_bbox.split(","))
     ax.legend(
         legend_handles,
         legend_labels,
         ncol=2,
-        loc="upper right",
+        loc=args.legend_loc,
+        bbox_to_anchor=(bx, by),
+        borderaxespad=0.0,
         fontsize=9,
-        framealpha=0.95,
+        framealpha=args.legend_alpha,
+        facecolor="white",
+        edgecolor="0.75",
+        fancybox=True,
         columnspacing=1.2,
         handlelength=2.8,
     )
