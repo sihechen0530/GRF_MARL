@@ -48,6 +48,7 @@ def get_local_ip_address():
     return ip_address
 
 
+<<<<<<< HEAD
 def start_cluster():
 <<<<<<< HEAD
     import os
@@ -73,10 +74,31 @@ def start_cluster():
                 "Connected to existing cluster but no CPU available (all resources claimed). "
                 "Starting a fresh local Ray cluster for this job."
             )
+=======
+def start_cluster(use_distributed: bool = False):
+    if use_distributed:
+        # Multi-node mode: connect to a pre-started Ray cluster.
+        try:
+            cluster_start_info = ray.init(address="auto")
+            available = ray.available_resources()
+            free_cpu = available.get("CPU", 0)
+            if free_cpu == 0:
+                Logger.warning(
+                    "Connected to existing cluster but no CPU available (all resources claimed). "
+                    "Starting a fresh local Ray cluster for this job."
+                )
+                ray.shutdown()
+                cluster_start_info = ray.init(resources={})
+        except Exception:
+            Logger.warning("No active cluster detected, will create local ray instance.")
+>>>>>>> 54a3c76 (fix no api call during training & variable referenced before assignment & ray conflict)
             ray.shutdown()
             cluster_start_info = ray.init(resources={})
-    except Exception:
-        Logger.warning("No active cluster detected, will create local ray instance.")
+    else:
+        # Local (single-node / SLURM) mode: always start a fresh cluster.
+        # Attempting address="auto" here is dangerous: a stale Redis from a previous
+        # job on the same node can be found, but its raylet socket no longer exists,
+        # causing an uncatchable C++ abort inside ray.init().
         ray.shutdown()
         cluster_start_info = ray.init(resources={})
 >>>>>>> e9b8823 (refactor setting log and output directory)
@@ -98,7 +120,7 @@ def main():
     set_random_seed(cfg.seed)
 
     assert cfg.distributed.nodes.master.ip is not None
-    cluster_start_info = start_cluster()
+    cluster_start_info = start_cluster(use_distributed=cfg.distributed.get("use", False))
 
     if cfg.distributed.nodes.master.ip == "auto":
         # ip = get_local_ip_address()
