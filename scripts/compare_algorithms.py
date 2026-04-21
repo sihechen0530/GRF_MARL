@@ -43,6 +43,13 @@ COLORS = [
 ]
 
 
+def linestyle_for_algorithm(algo_name: str) -> str:
+    """Baseline-style runs: solid; LLM / eureka_llm runs: dashed."""
+    if "llm" in algo_name.lower():
+        return "--"
+    return "-"
+
+
 def discover_experiments(log_dir, scenario, algorithms=None):
     """
     Discover experiment directories matching a scenario.
@@ -206,11 +213,19 @@ def main():
         fig, ax = plt.subplots(figsize=(10, 6))
         for i, (algo, agg) in enumerate(sorted(algo_aggregated.items())):
             color = COLORS[i % len(COLORS)]
+            ls = linestyle_for_algorithm(algo)
             mean = smooth(agg["mean"], args.smooth_window)
             std = smooth(agg["std"], args.smooth_window)
 
             label = f"{algo.upper()} (n={agg['n_runs']})"
-            ax.plot(agg["steps"], mean, color=color, linewidth=1.5, label=label)
+            ax.plot(
+                agg["steps"],
+                mean,
+                color=color,
+                linestyle=ls,
+                linewidth=1.5,
+                label=label,
+            )
             ax.fill_between(
                 agg["steps"], mean - std, mean + std,
                 color=color, alpha=0.15,

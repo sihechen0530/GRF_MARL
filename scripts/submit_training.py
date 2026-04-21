@@ -25,7 +25,18 @@ DEFAULT_SLURM_CONFIG = {
     # Whole node for this allocation → avoids multiple jobs on one node fighting Ray :6379.
     # Set slurm_config.exclusive: false in YAML if your partition rejects --exclusive.
     "exclusive": True,
+    # Slurm --exclude=... (comma-separated). Discovery: skip bad GPU nodes. Override with null in yaml.
+    "exclude_nodes": "d4049,d3168,d3170",
 }
+
+
+def _append_sbatch_placement_opts(sbatch_cmd, slurm_cfg):
+    """--exclude and --exclusive from merged slurm_config (after base sbatch resource args)."""
+    ex_nodes = slurm_cfg.get("exclude_nodes")
+    if ex_nodes:
+        sbatch_cmd.append(f"--exclude={ex_nodes}")
+    if slurm_cfg.get("exclusive", False):
+        sbatch_cmd.append("--exclusive")
 
 
 def _inject_conda_export_for_sbatch(sbatch_cmd, export_mode="all", conda_env=None):
@@ -139,6 +150,8 @@ def submit_training_job(
     print(f"  Time limit: {slurm_cfg['time_hours']}h")
     print(f"  Partition: {slurm_cfg['partition']}")
     print(f"  Exclusive node: {slurm_cfg.get('exclusive', False)}")
+    if slurm_cfg.get("exclude_nodes"):
+        print(f"  Exclude nodes: {slurm_cfg['exclude_nodes']}")
     print()
 
     # Parse experiment info from config path or provide defaults
@@ -171,8 +184,7 @@ def submit_training_job(
         f"--time={time_str}",
         f"--partition={slurm_cfg['partition']}",
     ]
-    if slurm_cfg.get("exclusive", False):
-        sbatch_cmd.append("--exclusive")
+    _append_sbatch_placement_opts(sbatch_cmd, slurm_cfg)
     _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
     # Add training arguments
@@ -321,8 +333,7 @@ def chain_submit_jobs(
             f"--time={time_str}",
             f"--partition={slurm_cfg['partition']}",
         ]
-        if slurm_cfg.get("exclusive", False):
-            sbatch_cmd.append("--exclusive")
+        _append_sbatch_placement_opts(sbatch_cmd, slurm_cfg)
         _inject_conda_export_for_sbatch(sbatch_cmd, export_mode=slurm_export, conda_env=conda_env)
 
         # Add dependency if not first job
