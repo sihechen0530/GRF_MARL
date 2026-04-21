@@ -3,7 +3,7 @@
 Overlay eval curves for IPPO / MAPPO / MAT × (baseline vs LLM-shaped reward).
 
 Each CSV path is optional — pass only the runs you want (e.g. four curves: two algos × baseline + LLM).
-Same algorithm shares one color: baseline solid, LLM dashed.
+Same algorithm shares one color: baseline dashed, LLM solid.
 Legend (ncol=2): rows pair (baseline | LLM φ) per algorithm in IPPO → MAPPO → MAT order.
 
 CSV format: same as eval_checkpoint.py → eval_results.csv.
@@ -76,7 +76,7 @@ def _plot_series(ax, rows, metric, ci_key, color, linestyle, marker, markersize,
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Optional IPPO/MAPPO/MAT baseline + LLM CSVs; same color per algo, solid=baseline, dashed=LLM."
+        description="Optional IPPO/MAPPO/MAT baseline + LLM CSVs; same color per algo, dashed=baseline, solid=LLM."
     )
     ap.add_argument("--title", type=str, default="Eval comparison")
     ap.add_argument("--output", "-o", type=str, required=True, help="Output .png path")
@@ -142,7 +142,7 @@ def main() -> None:
             rb = truncate_series(read_eval_csv(path_b), args.max_epoch)
             if rb:
                 max_epoch_seen = max(max_epoch_seen, max(r["epoch"] for r in rb))
-            hb = _plot_series(ax, rb, args.metric, ci_key, color, "-", "o", ms, show_ci)
+            hb = _plot_series(ax, rb, args.metric, ci_key, color, "--", "o", ms, show_ci)
             if hb is not None:
                 legend_handles.append(hb)
                 legend_labels.append(f"{algo} (baseline)")
@@ -158,7 +158,7 @@ def main() -> None:
             rl = truncate_series(read_eval_csv(path_l), args.max_epoch)
             if rl:
                 max_epoch_seen = max(max_epoch_seen, max(r["epoch"] for r in rl))
-            hl = _plot_series(ax, rl, args.metric, ci_key, color, "--", "s", ms, show_ci)
+            hl = _plot_series(ax, rl, args.metric, ci_key, color, "-", "s", ms, show_ci)
             if hl is not None:
                 legend_handles.append(hl)
                 legend_labels.append(f"{algo} (LLM φ)")
