@@ -43,10 +43,14 @@ COLORS = [
 ]
 
 
-def linestyle_for_algorithm(algo_name: str) -> str:
-    """Baseline-style runs: solid; LLM / eureka_llm runs: dashed."""
-    if "llm" in algo_name.lower():
-        return "--"
+def linestyle_for_algorithm(algo_name: str, dashed_substrings) -> str:
+    """Solid unless ``algo_name`` contains any of ``dashed_substrings`` (case-insensitive)."""
+    if not dashed_substrings:
+        return "-"
+    low = algo_name.lower()
+    for s in dashed_substrings:
+        if s and str(s).lower() in low:
+            return "--"
     return "-"
 
 
@@ -183,7 +187,18 @@ def main():
                         help="Smoothing window size (default: 1 = no smoothing)")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Output directory")
+    parser.add_argument(
+        "--dashed-substr",
+        nargs="*",
+        default=["llm"],
+        metavar="SUBSTR",
+        help="Algorithm key substring(s); if any appear in the discovered algo name "
+        "(case-insensitive), that curve uses a dashed line. Default: llm. "
+        "Pass multiple tokens, e.g. --dashed-substr llm eureka_llm.",
+    )
     args = parser.parse_args()
+
+    dashed_substrs = tuple(s for s in (args.dashed_substr or []) if s)
 
     if args.output_dir is None:
         args.output_dir = os.path.join("results", f"compare_{args.scenario}")
@@ -213,11 +228,12 @@ def main():
         fig, ax = plt.subplots(figsize=(10, 6))
         for i, (algo, agg) in enumerate(sorted(algo_aggregated.items())):
             color = COLORS[i % len(COLORS)]
-            ls = linestyle_for_algorithm(algo)
+            ls = linestyle_for_algorithm(algo, dashed_substrs)
             mean = smooth(agg["mean"], args.smooth_window)
             std = smooth(agg["std"], args.smooth_window)
 
             label = f"{algo.upper()} (n={agg['n_runs']})"
+            print(f"  plot: {algo} -> linestyle={ls!r} (dashed if match {dashed_substrs!r})")
             ax.plot(
                 agg["steps"],
                 mean,

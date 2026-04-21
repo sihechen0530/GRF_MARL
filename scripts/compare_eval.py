@@ -42,6 +42,17 @@ COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
 MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 
+def linestyle_for_label(label: str, dashed_substrings) -> str:
+    """Solid unless ``label`` contains any of ``dashed_substrings`` (case-insensitive)."""
+    if not dashed_substrings:
+        return "-"
+    low = label.lower()
+    for s in dashed_substrings:
+        if s and str(s).lower() in low:
+            return "--"
+    return "-"
+
+
 def read_eval_csv(path):
     """Read eval_results.csv and return rows sorted by epoch (epoch >= 0 only)."""
     rows = []
@@ -134,7 +145,15 @@ def truncate_series(rows, max_epoch):
     return out
 
 
-def plot_comparison(series_list, title, output_path, ylabel="Win Rate", metric="win_rate", ci_key="win_ci"):
+def plot_comparison(
+    series_list,
+    title,
+    output_path,
+    ylabel="Win Rate",
+    metric="win_rate",
+    ci_key="win_ci",
+    dashed_substrings=("llm",),
+):
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for i, (label, rows) in enumerate(series_list):
@@ -146,8 +165,20 @@ def plot_comparison(series_list, title, output_path, ylabel="Win Rate", metric="
         cis = [r.get(ci_key, 0.0) for r in rows]
         color = COLORS[i % len(COLORS)]
         marker = MARKERS[i % len(MARKERS)]
-        ax.errorbar(epochs, values, yerr=cis, fmt=f"{marker}-", capsize=3,
-                     linewidth=1.8, markersize=5, color=color, label=label)
+        ls = linestyle_for_label(label, dashed_substrings)
+        print(f"  plot: {label!r} -> linestyle={ls!r} (dashed if match {dashed_substrings!r})")
+        ax.errorbar(
+            epochs,
+            values,
+            yerr=cis,
+            linestyle=ls,
+            marker=marker,
+            linewidth=1.8,
+            markersize=5,
+            color=color,
+            label=label,
+            capsize=3,
+        )
 
     ax.set_xlabel("Training Epoch", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
@@ -188,7 +219,17 @@ def main():
     parser.add_argument("--max_epoch", type=float, default=None,
                         help="Only plot points with epoch <= this value (all series). "
                              "Useful when one run has many more checkpoints than others.")
+    parser.add_argument(
+        "--dashed-substr",
+        nargs="*",
+        default=["llm"],
+        metavar="SUBSTR",
+        help="Legend label substring(s); if any match (case-insensitive), that series "
+        "uses a dashed line (baseline-style labels stay solid). Default: llm.",
+    )
     args = parser.parse_args()
+
+    dashed_substrs = tuple(s for s in (args.dashed_substr or []) if s)
 
     series = []
 
@@ -229,10 +270,15 @@ def main():
     ylabel_map = {"win_rate": "Win Rate", "reward_mean": "Reward", "goal_mean": "Goals"}
     ci_map = {"win_rate": "win_ci", "reward_mean": "reward_ci", "goal_mean": "goal_ci"}
 
-    plot_comparison(series, args.title, args.output,
-                    ylabel=ylabel_map[args.metric],
-                    metric=args.metric,
-                    ci_key=ci_map[args.metric])
+    plot_comparison(
+        series,
+        args.title,
+        args.output,
+        ylabel=ylabel_map[args.metric],
+        metric=args.metric,
+        ci_key=ci_map[args.metric],
+        dashed_substrings=dashed_substrs,
+    )
 
 
 if __name__ == "__main__":
