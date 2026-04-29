@@ -140,13 +140,8 @@ class RolloutManager:
             with self.rollout_epoch_lock:
                 self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
-<<<<<<< HEAD
-            reward = 0.0
-            win = 0.0
-=======
             reward, win = -np.inf, 0.0  # defaults in case the loop exits before the first eval
             rollout_epoch = self.rollout_epoch  # default in case stopper fires before first iteration
->>>>>>> 54a3c76 (fix no api call during training & variable referenced before assignment & ray conflict)
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
                 stopper_kwargs = {"step": self.rollout_epoch}

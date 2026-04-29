@@ -48,33 +48,6 @@ def get_local_ip_address():
     return ip_address
 
 
-<<<<<<< HEAD
-def start_cluster():
-<<<<<<< HEAD
-    import os
-
-    ray_temp = os.environ.get("RAY_TMPDIR")
-    init_kwargs = {}
-    if ray_temp:
-        init_kwargs["_temp_dir"] = ray_temp
-
-    # Do not use address="auto" on shared nodes: workers can attach to a foreign Ray that
-    # later dies, or raylet sockets go stale → "Could not connect to socket .../raylet".
-    Logger.warning("Starting a fresh local Ray cluster (isolated; RAY_TMPDIR if set).")
-    cluster_start_info = ray.init(**init_kwargs)
-=======
-    try:
-        cluster_start_info = ray.init(address="auto")
-        # If we connected to an existing cluster but it has no free resources (e.g. leftover
-        # from another job), start a fresh local cluster so this job can schedule its actors.
-        available = ray.available_resources()
-        free_cpu = available.get("CPU", 0)
-        if free_cpu == 0:
-            Logger.warning(
-                "Connected to existing cluster but no CPU available (all resources claimed). "
-                "Starting a fresh local Ray cluster for this job."
-            )
-=======
 def start_cluster(use_distributed: bool = False):
     if use_distributed:
         # Multi-node mode: connect to a pre-started Ray cluster.
@@ -91,24 +64,25 @@ def start_cluster(use_distributed: bool = False):
                 cluster_start_info = ray.init(resources={})
         except Exception:
             Logger.warning("No active cluster detected, will create local ray instance.")
->>>>>>> 54a3c76 (fix no api call during training & variable referenced before assignment & ray conflict)
             ray.shutdown()
             cluster_start_info = ray.init(resources={})
     else:
         # Local (single-node / SLURM) mode: always start a fresh cluster.
         # Use a random port to avoid collisions with other jobs sharing the same node
         # (port 6379 is Ray's default and would be claimed by the first job).
+        # Cap object store to 70% of /dev/shm so Ray doesn't hit the "equals shm size" error.
+        import shutil
+        try:
+            shm_bytes = shutil.disk_usage("/dev/shm").total
+            object_store_memory = int(shm_bytes * 0.7)
+        except FileNotFoundError:
+            object_store_memory = int(20 * 1024 ** 3)  # 20 GB fallback
         ray.shutdown()
-<<<<<<< HEAD
-<<<<<<< HEAD
-        cluster_start_info = ray.init(resources={})
->>>>>>> e9b8823 (refactor setting log and output directory)
-=======
-        cluster_start_info = ray.init(resources={}, port=0)
->>>>>>> 0068ad1 (improve training configuration)
-=======
-        cluster_start_info = ray.init(resources={}, _temp_dir=f"/tmp/ray_{os.getpid()}")
->>>>>>> b444781 (fix ray)
+        cluster_start_info = ray.init(
+            resources={},
+            _temp_dir=f"/tmp/ray_{os.getpid()}",
+            object_store_memory=object_store_memory,
+        )
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)

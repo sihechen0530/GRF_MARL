@@ -34,7 +34,7 @@ class RolloutWorker:
     def __init__(self, id, seed, cfg, agents: Agents):
         self.id = id
         self.seed = seed
-        # set_random_seed(self.seed)
+        set_random_seed(self.seed)
 
         self.cfg = cfg
         self.agents = agents
@@ -68,6 +68,17 @@ class RolloutWorker:
         self.pull_policies(policy_ids)
         behaving_policies = self.get_policies(policy_ids)
         global_timer.time("sample_end", "policy_update_end", "policy_update")
+
+        # Lazily wrap the env with the LLM mask wrapper the first time we see a
+        # training policy that has use_llm_mask=True.  The wrapper persists for the
+        # lifetime of the worker so the LLM cache is shared across all episodes.
+        from light_malib.envs.gr_football.llm_mask_wrapper import GRFLLMMaskWrapper
+        if not isinstance(env, GRFLLMMaskWrapper):
+            training_policy = behaving_policies[rollout_desc.agent_id][1]
+            if training_policy.custom_config.get("use_llm_mask", False):
+                env = GRFLLMMaskWrapper(env, training_policy.custom_config)
+                env_id = list(self.envs.keys())[0]
+                self.envs[env_id] = env
 
         rollout_length = (
             self.cfg.rollout_length if not eval else self.cfg.eval_rollout_length

@@ -215,16 +215,22 @@ class MAPPOLoss(LossFunc):
         )
 
         if update_actor:
+            compute_action_kwargs = {
+                EpisodeKey.CUR_STATE: share_obs_batch,
+                EpisodeKey.CUR_OBS: obs_batch,
+                EpisodeKey.ACTION: actions_batch,
+                EpisodeKey.ACTOR_RNN_STATE: actor_rnn_states_batch,
+                EpisodeKey.CRITIC_RNN_STATE: critic_rnn_states_batch,
+                EpisodeKey.DONE: dones_batch,
+                EpisodeKey.ACTION_MASK: available_actions_batch,
+            }
+            # Pass the per-step LLM penalty stored during rollout so that new_log_prob
+            # is computed under the same masked distribution as old_log_prob, keeping
+            # PPO importance ratios exp(new - old) unbiased.
+            if EpisodeKey.LLM_PENALTY in sample:
+                compute_action_kwargs[EpisodeKey.LLM_PENALTY] = sample[EpisodeKey.LLM_PENALTY]
             ret = self._policy.compute_action(
-                **{
-                    EpisodeKey.CUR_STATE: share_obs_batch,
-                    EpisodeKey.CUR_OBS: obs_batch,
-                    EpisodeKey.ACTION: actions_batch,
-                    EpisodeKey.ACTOR_RNN_STATE: actor_rnn_states_batch,
-                    EpisodeKey.CRITIC_RNN_STATE: critic_rnn_states_batch,
-                    EpisodeKey.DONE: dones_batch,
-                    EpisodeKey.ACTION_MASK: available_actions_batch  
-                },
+                **compute_action_kwargs,
                 inference=False,
                 explore=False
             )

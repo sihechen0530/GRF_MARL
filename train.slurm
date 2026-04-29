@@ -9,6 +9,7 @@
 #SBATCH --mem=150GB
 #SBATCH --time=8:00:00
 #SBATCH --partition=gpu
+#SBATCH --exclude=d4049,d3170
 
 # ============================================================================
 # SLURM Training Script for Light-MALib Multi-Agent Reinforcement Learning
@@ -32,6 +33,7 @@ set -o pipefail  # python | tee must propagate failure (otherwise job shows SUCC
 CONFIG_PATH=""
 RESUME_DIR=""      # explicit dir to resume from (optional)
 AUTO_RESUME="false"
+LOG_BASE="logs"    # root under PROJECT_ROOT where run dirs live (e.g. "logs" or "exps")
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
         --auto-resume)
             AUTO_RESUME="true"
             shift 1
+            ;;
+        --log-base)
+            LOG_BASE="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option: $1"
@@ -84,15 +90,15 @@ cd "$PROJECT_ROOT" || exit 1
 EXPR_NAME=$(grep '^expr_name:' "$CONFIG_PATH" | awk '{print $2}')
 EXPR_GROUP=$(grep '^expr_group:' "$CONFIG_PATH" | awk '{print $2}')
 EXPR_GROUP="${EXPR_GROUP:-gr_football}"
-EXPR_BASE="$PROJECT_ROOT/logs/$EXPR_GROUP/$EXPR_NAME"
+EXPR_BASE="$PROJECT_ROOT/$LOG_BASE/$EXPR_GROUP/$EXPR_NAME"
 
 # Determine experiment output directory
 if [ -n "$RESUME_DIR" ]; then
     # Explicit resume directory provided
     EXPR_LOG_DIR="$(cd "$RESUME_DIR" && pwd)"
 elif [ "$AUTO_RESUME" = "true" ]; then
-    # Find latest existing run dir; fall back to fresh if none exists
-    LATEST=$(ls -1dt "$EXPR_BASE"/????-??-??-??-??-?? 2>/dev/null | head -1)
+    # Find latest existing run dir (sort by name, which is a timestamp); fall back to fresh if none exists
+    LATEST=$(ls -1d "$EXPR_BASE"/????-??-??-??-??-?? 2>/dev/null | sort -r | head -1)
     if [ -n "$LATEST" ]; then
         EXPR_LOG_DIR="$LATEST"
     else
@@ -143,18 +149,10 @@ module load cuda/12.1.1
 echo "Python executable: $(which python)"
 echo "Python version: $(python --version)"
 
-# Do not attach to a Ray cluster left over in the shell environment.
 unset RAY_ADDRESS
 unset RAY_IP
 
-# Per-job Ray temp dir (avoids connecting to another user's /tmp/ray session).
-export RAY_TMPDIR="/tmp/ray_${USER:-user}_${SLURM_JOB_ID:-local}"
-mkdir -p "$RAY_TMPDIR"
-ray stop --force 2>/dev/null || true
-# Do not rm /tmp/ray/session_latest: on shared nodes that can break other users' default Ray.
-unset RAY_memory RAY_object_store_memory 2>/dev/null || true
-
-# Only set CUDA_VISIBLE_DEVICES if not already set (e.g. by SLURM when multiple jobs share a node)
+# Set Ray configuration for SLURM environment
 if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 fi
@@ -162,9 +160,8 @@ fi
 export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-echo "RAY_TMPDIR=$RAY_TMPDIR" | tee -a "$LOG_FILE"
-echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
-echo "SLURM_MEM_PER_NODE: ${SLURM_MEM_PER_NODE:-unset} MB" | tee -a "$LOG_FILE"
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo ""
 
 python -c "import torch; assert torch.cuda.is_available(), 'No CUDA'; print(f'GPU OK: {torch.cuda.get_device_name(0)}')" \
     | tee -a "$LOG_FILE" || { echo "CUDA check failed." | tee -a "$LOG_FILE"; exit 1; }

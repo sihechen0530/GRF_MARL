@@ -42,9 +42,12 @@ from light_malib.llm.prompts_mask import build_mask_messages
 #              11 active_onehot | 7 game_mode_onehot]
 # ---------------------------------------------------------------------------
 _N_ACTIONS = 19
+_LEFT_POS_START = 19                    # left team x,y positions start here
 _BALL_X_IDX = 19 + 22 + 22 + 22 + 22  # = 107
+_ACTIVE_START = 19 + 22 + 22 + 22 + 22 + 3 + 3 + 3  # = 116  (active player one-hot)
 _GAME_MODE_START = 19 + 22 + 22 + 22 + 22 + 3 + 3 + 3 + 11  # = 127
 _SLIDE_IDX = 16   # action index for SLIDE (0 when my team has ball)
+_ALWAYS_ZERO_ACTIONS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 17)
 
 
 def _ball_zone(ball_x: float) -> int:
@@ -76,6 +79,13 @@ def _parse_llm_response(text: str, n_actions: int) -> Optional[np.ndarray]:
             )
             return None
         arr = np.clip(np.array(data, dtype=np.float32), 0.0, 1.0)
+        protected = arr[list(_ALWAYS_ZERO_ACTIONS)]
+        if np.any(protected > 0):
+            Logger.warning(
+                "EntropyGuidedMask: correcting protected-action penalties "
+                f"{dict((idx, float(arr[idx])) for idx in _ALWAYS_ZERO_ACTIONS if arr[idx] > 0)}"
+            )
+            arr[list(_ALWAYS_ZERO_ACTIONS)] = 0.0
         return arr
     except (json.JSONDecodeError, ValueError) as exc:
         Logger.warning(f"EntropyGuidedMask: failed to parse LLM response: {exc}\nResponse: {text[:200]}")
@@ -155,13 +165,30 @@ class EntropyGuidedMask:
     def get_penalty(self) -> Optional[np.ndarray]:
         """
         Return the current soft penalty array (shape [n_actions], values in
-        [0, penalty_scale]) if masking is active, otherwise None.
+        [0, penalty_scale]), or None if no nonzero penalty is cached.
+
+        Applied regardless of entropy — cached guidance is always used so that
+        normal-play (mode=0) regimes, where entropy rarely exceeds the threshold,
+        still receive LLM guidance once their cache entry has been populated.
 
         Call this BEFORE actor.forward() to pass as llm_penalty.
         """
-        if not self._active:
-            return None
         weights = self._current_weights
+        if not np.any(weights > 0):
+            return None
+        return self.penalty_scale * weights
+
+    def get_penalty_for_regime(self, regime: dict) -> Optional[np.ndarray]:
+        """
+        Return the cached soft penalty array for a specific regime, or None if the
+        regime has not been cached yet or only contains zeros.
+        """
+        key = self._regime_key(regime)
+        with self._lock:
+            weights = self._cache.get(key)
+            if weights is None:
+                return None
+            weights = weights.copy()
         if not np.any(weights > 0):
             return None
         return self.penalty_scale * weights
@@ -184,31 +211,31 @@ class EntropyGuidedMask:
                 f"active={self._active} cache_size={len(self._cache)}"
             )
 
-        # Hysteresis: activate on high entropy, deactivate on low
+        # Track high-entropy state for diagnostic logging only (no longer gates cache use)
         if not self._active and entropy > self.high_thresh:
             self._active = True
             Logger.info(
-                f"EntropyGuidedMask: activated (entropy={entropy:.3f} > {self.high_thresh:.3f})"
+                f"EntropyGuidedMask: high-entropy state (entropy={entropy:.3f} > {self.high_thresh:.3f})"
             )
         elif self._active and entropy < self.low_thresh:
             self._active = False
             Logger.info(
-                f"EntropyGuidedMask: deactivated (entropy={entropy:.3f} < {self.low_thresh:.3f})"
+                f"EntropyGuidedMask: low-entropy state (entropy={entropy:.3f} < {self.low_thresh:.3f})"
             )
 
-        if not self._active:
-            return
-
+        # Always look up and populate cache — not gated on entropy.
+        # This ensures normal-play (mode 0) regimes, which rarely hit high_thresh,
+        # still receive guidance once a cache entry exists.
         key = self._regime_key(regime)
 
         with self._lock:
             if key in self._cache:
-                # Cache hit: update current weights if regime changed
+                # Cache hit: update current weights whenever regime changes
                 if key != self._current_regime:
                     self._current_weights = self._cache[key]
                     self._current_regime = key
             elif not self._pending:
-                # Cache miss and no call in flight: fire async call
+                # Cache miss and no call in flight: fire async LLM call for any regime
                 self._pending = True
                 self._current_regime = key
                 threading.Thread(
@@ -229,6 +256,12 @@ class EntropyGuidedMask:
         (shape [batch, obs_dim]).  For batches, uses the first element.
 
         Expects the simple115 + action-mask encoder layout (obs_dim = 134).
+
+        Regime keys:
+          game_mode  : int 0-6
+          possession : 0=my team, 1=opponent/loose
+          ball_zone  : -1=defensive, 0=midfield, 1=attacking
+          player_zone: -1=defensive, 0=midfield, 1=attacking (active player's position)
         """
         if obs.ndim > 1:
             obs = obs[0]
@@ -250,11 +283,27 @@ class EntropyGuidedMask:
         else:
             possession = -1
 
+        # Active player zone: one-hot at [116:127], positions interleaved at [19:41]
+        player_zone = 0
+        if len(obs) > _ACTIVE_START + 10:
+            active_idx = int(np.argmax(obs[_ACTIVE_START : _ACTIVE_START + 11]))
+            player_x = float(obs[_LEFT_POS_START + active_idx * 2])
+            player_zone = _ball_zone(player_x)  # same thresholds as ball zone
+
+        # Compute player_x cleanly for the prompt (already have active_idx above)
+        if len(obs) > _ACTIVE_START + 10:
+            _ai = int(np.argmax(obs[_ACTIVE_START : _ACTIVE_START + 11]))
+            player_x = float(obs[_LEFT_POS_START + _ai * 2])
+        else:
+            player_x = 0.0
+
         return {
             "game_mode": game_mode,
             "possession": possession,
             "ball_zone": _ball_zone(ball_x),
             "ball_x": ball_x,
+            "player_zone": player_zone,
+            "player_x": player_x,
         }
 
     # ------------------------------------------------------------------
@@ -265,14 +314,14 @@ class EntropyGuidedMask:
         """
         Persist the regime cache to a JSON file.
 
-        Keys are serialised as "game_mode,possession,ball_zone" strings;
+        Keys are serialised as "game_mode,possession,ball_zone,player_zone" strings;
         values are lists of floats.  The file is written atomically via a
         temp file so a crash mid-write cannot corrupt the checkpoint.
         """
         import os, tempfile
         with self._lock:
             serialisable = {
-                f"{k[0]},{k[1]},{k[2]}": v.tolist()
+                ",".join(str(x) for x in k): v.tolist()
                 for k, v in self._cache.items()
             }
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
@@ -302,7 +351,12 @@ class EntropyGuidedMask:
             loaded: dict = {}
             for key_str, weights_list in raw.items():
                 parts = key_str.split(",")
-                key = (int(parts[0]), int(parts[1]), int(parts[2]))
+                # Support both old 3-element keys and new 4-element keys.
+                # Old keys (game_mode,possession,ball_zone) default player_zone=0.
+                if len(parts) == 3:
+                    key = (int(parts[0]), int(parts[1]), int(parts[2]), 0)
+                else:
+                    key = tuple(int(p) for p in parts)
                 loaded[key] = np.array(weights_list, dtype=np.float32)
             with self._lock:
                 self._cache.update(loaded)
@@ -310,13 +364,51 @@ class EntropyGuidedMask:
         except Exception as exc:
             Logger.warning(f"EntropyGuidedMask: could not load cache from {path}: {exc}")
 
+    def warmup_cache(self) -> None:
+        """
+        Synchronously pre-populate LLM cache for all normal-play (mode=0) regimes.
+
+        Call this once at training startup (after load_cache) so that the LLM
+        guidance is available from the very first training step — before any
+        async cache-miss thread has had a chance to return results.
+
+        Covers 18 states: mode=0 × possession∈{0,1} × ball_zone∈{-1,0,1}
+                                    × player_zone∈{-1,0,1}
+        (possession=-1 is skipped as it's rare in 11v11 normal play).
+        Blocking; takes ~10-20 seconds depending on API latency.
+        """
+        Logger.info("EntropyGuidedMask: warming up cache for normal-play regimes...")
+        for ball_zone in (-1, 0, 1):
+            for possession in (0, 1):
+                for player_zone in (-1, 0, 1):
+                    key = (0, possession, ball_zone, player_zone)
+                    with self._lock:
+                        already_cached = key in self._cache
+                    if already_cached:
+                        Logger.info(f"EntropyGuidedMask: warmup skipping {key} (already cached)")
+                        continue
+                    regime = {
+                        "game_mode": 0,
+                        "possession": possession,
+                        "ball_zone": ball_zone,
+                        "ball_x": float(ball_zone) * 0.5,
+                        "player_zone": player_zone,
+                        "player_x": float(player_zone) * 0.5,
+                    }
+                    Logger.info(f"EntropyGuidedMask: warmup fetching regime {key}")
+                    self._fetch_mask(key, regime)   # blocking call
+        Logger.info(
+            f"EntropyGuidedMask: warmup complete — {len(self._cache)} regimes cached"
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     @staticmethod
     def _regime_key(regime: dict) -> Tuple:
-        return (regime["game_mode"], regime["possession"], regime["ball_zone"])
+        return (regime["game_mode"], regime["possession"], regime["ball_zone"],
+                regime.get("player_zone", 0))
 
     def _single_llm_call(self, messages: List[dict]) -> Optional[np.ndarray]:
         """Make one LLM call and parse the response. Returns None on failure."""

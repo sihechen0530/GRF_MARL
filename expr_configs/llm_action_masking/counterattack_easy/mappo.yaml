@@ -30,7 +30,7 @@ framework:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 11000          #iteration at each psro round
+      max_steps: 2000          #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -243,7 +243,7 @@ populations:
         use_popart: True
         popart_beta: 0.99999
 
-        entropy_coef: 0.00
+        entropy_coef: 0.01
         clip_param: 0.2
         # kl_early_stop: 0.01
 
@@ -251,7 +251,7 @@ populations:
         use_llm_mask: True
         llm_mask_high_thresh: 0.7   # activate when entropy > 0.7 * ln(n_actions)
         llm_mask_low_thresh: 0.3    # deactivate when entropy < 0.3 * ln(n_actions)
-        llm_mask_penalty_scale: 3.0 # logit subtraction strength for LLM-penalized actions
+        llm_mask_penalty_scale: 1.0 # logit subtraction strength for LLM-penalized actions
         llm_mask_num_samples: 3     # parallel LLM calls per regime; results are averaged
         llm_mask_sample_temperature: 0.4 # temperature for diversity across samples
 

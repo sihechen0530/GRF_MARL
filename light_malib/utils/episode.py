@@ -57,3 +57,8 @@ class EpisodeKey:
     # expert
     EXPERT_OBS = "expert_obs"
     EXPERT_ACTION = "expert_action"
+
+    # LLM-guided entropy masking — per-step penalty applied during rollout
+    # Shape per step: [N, n_actions]; used to replicate the same masked distribution
+    # in the training update so that PPO importance ratios are computed consistently.
+    LLM_PENALTY = "llm_penalty"

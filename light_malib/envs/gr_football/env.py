@@ -73,6 +73,10 @@ class GRFootballEnv(BaseEnv):
             env_kwargs = OmegaConf.to_container(scenario_config, resolve=True) if not isinstance(scenario_config, dict) else dict(scenario_config)
         except Exception:
             env_kwargs = dict(scenario_config)
+        if seed is not None:
+            other_options = dict(env_kwargs.get("other_config_options") or {})
+            other_options.setdefault("game_engine_random_seed", int(seed))
+            env_kwargs["other_config_options"] = other_options
         if "logdir" in env_kwargs and env_kwargs["logdir"] is not None:
             env_kwargs["logdir"] = os.path.abspath(os.path.expanduser(str(env_kwargs["logdir"])))
         

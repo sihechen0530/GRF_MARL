@@ -4,9 +4,9 @@ seed: 0
 eval_only: False
 
 slurm_config:
-  num_gpus: 1
-  cpus_per_task: 32    # 22 workers + trainer + ray infra headroom
-  memory_gb: 100
+  num_gpus: 4
+  cpus_per_task: 48
+  memory_gb: 360
   time_hours: 1
   partition: "sharing"
 
@@ -76,7 +76,7 @@ rollout_manager:
         - ["node:${distributed.nodes.master.ip}",0.01]
   num_workers: 22
   seed: 12345
-  saving_interval: 5   # checkpoint frequently — jobs last only 1 hour
+  saving_interval: 10   # checkpoint frequently — jobs last only 1 hour
   batch_size: ${rollout_manager.num_workers}
   eval_batch_size: 100
   eval_freq: 100
@@ -244,10 +244,12 @@ populations:
 
         # LLM-guided entropy masking
         use_llm_mask: True
-        llm_mask_high_thresh: 0.7   # activate when entropy > 0.7 * ln(n_actions)
-        llm_mask_low_thresh: 0.3    # deactivate when entropy < 0.3 * ln(n_actions)
-        llm_mask_penalty_scale: 1.0 # logit subtraction strength for LLM-penalized actions
-        llm_mask_num_samples: 3     # parallel LLM calls per regime; results are averaged
+        llm_mask_warmup: True         # pre-populate all normal-play regimes at startup
+        llm_mask_high_thresh: 0.7     # tracked for logging only (no longer gates guidance)
+        llm_mask_low_thresh: 0.3      # tracked for logging only
+        llm_mask_penalty_scale: 0.1   # reduced from 1.0: soft suggestion rather than hard constraint
+        llm_mask_warmup_epochs: 500   # no penalty for first 500 epochs; let policy learn basic structure first
+        llm_mask_num_samples: 3       # parallel LLM calls per regime; results are averaged
         llm_mask_sample_temperature: 0.4
 
       policy_init_cfg:
@@ -258,6 +260,10 @@ populations:
               strategy: random
               policy_id:
               policy_dir:
+            - condition: ">0"
+              strategy: inherit_last
+              policy_id:
+              policy_dir:
           initial_policies:
 
         agent_1:
@@ -266,5 +272,5 @@ populations:
             - condition: "==0"
               strategy: pretrained
               policy_id: built_in
-              policy_dir: light_malib/trained_models/gr_football/5_vs_5/built_in
+              policy_dir: light_malib/trained_models/gr_football/11_vs_11/built_in
           initial_policies:

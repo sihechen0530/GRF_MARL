@@ -1,14 +1,13 @@
 expr_group: gr_football
-expr_name: benchmark_academy_counterattack_mat
-log_dir: ./logs             #log directory
+expr_name: llm_mask_fix_full_game_11_vs_11_hard_ippo
+log_dir: ./logs
 seed: 0
-eval_only: False            #True if only want evaluation
+eval_only: False
 
 slurm_config:
-  num_gpus: 1
-  gpu_type: v100
-  cpus_per_task: 12
-  memory_gb: 90
+  num_gpus: 4
+  cpus_per_task: 48
+  memory_gb: 360
   time_hours: 1
   partition: "sharing"
 
@@ -19,19 +18,20 @@ distributed:
   nodes:
     master:
       ip: "auto"
-    workers:      
+    workers:
       - ip:
 
 framework:
-  name: "psro"                #framework name
-  max_rounds: 1         #psro rounds
-  meta_solver: "nash"         #'nash', 'uniform', 'pfsp'
-  sync_training: True   # TODO[jh]: on_policy, sync_off_policy, async_off_policy
+  name: "psro"
+  max_rounds: 1
+  meta_solver: "nash"
+  sync_training: True
   stopper:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 2000          #iteration at each psro round
+      max_steps: 5000
+
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -40,29 +40,29 @@ evaluation_manager:
   num_eval_rollouts: 1
 
 policy_data_manager:
-  update_func: "gr_football" 
+  update_func: "gr_football"
   fields:
     payoff:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     score:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     win:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     lose:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     my_goal:
       type: "matrix"
-      missing_value: -100 
+      missing_value: -100
     goal_diff:
       type: "matrix"
-      missing_value: -100 
-        
+      missing_value: -100
+
 monitor:
-  type: "local"   #'remote': wandb or 'local': tensorboard
+  type: "local"
   distributed:
     resources:
       num_cpus: 1
@@ -75,12 +75,12 @@ rollout_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
-  num_workers: 10     # fit within slurm cpus_per_task (12); leave headroom for trainer/coordinators
+  num_workers: 22
   seed: 12345
-  saving_interval: 50 # the frequency of dumping model's weight
+  saving_interval: 10
   batch_size: ${rollout_manager.num_workers}
   eval_batch_size: 100
-  eval_freq: 50 # epochs
+  eval_freq: 100
   rollout_metric_cfgs:
     reward:
       type: "sliding"
@@ -94,17 +94,17 @@ rollout_manager:
     distributed:
       resources:
         num_cpus: 1
-    rollout_length: 400                                    #episode length
-    eval_rollout_length: 400
-    sample_length: 0                                     #every $sample_length traj will be push to buffer during rollout
-    padding_length: # of not use in gr_football
+    rollout_length: 3001
+    eval_rollout_length: 3001
+    sample_length: 0
+    padding_length:
     rollout_func_name: "rollout_func"
-    episode_mode: "traj"
+    episode_mode: 'traj'
     envs:
       - cls: "gr_football"
         id_prefix: "gr_footbal"
         scenario_config:
-          env_name: "benchmark_academy_counterattack_hard"
+          env_name: "benchmark_full_game_11_vs_11_hard"
           number_of_left_players_agent_controls: 10
           number_of_right_players_agent_controls: 1
           representation: "raw"
@@ -115,15 +115,15 @@ rollout_manager:
           write_full_episode_dumps: False
           render: False
           other_config_options:
-            action_set: v2  #default/v2, v2 is only used for built-in AI
+            action_set: v2
         reward_config:
           goal_reward: 0
           official_reward: 1
     credit_reassign:
     decaying_exploration:
-      init_noise: 0             #random exploration noise level
-      total_epoch_to_zero: 2000    #number of epoch when exploration noise decay to zero
-      interval: 400                #number of epoch at each fixed exploration noise level
+      init_noise: 0
+      total_epoch_to_zero: 2000
+      interval: 400
 
 training_manager:
   distributed:
@@ -131,24 +131,22 @@ training_manager:
       num_cpus: 1
       resources:
         - ["node:${distributed.nodes.master.ip}",0.01]
- 
   master_addr: "127.0.0.1"
-  master_port:  "12774"
+  master_port: "12774"
   local_queue_size: 1
-  batch_size: ${rollout_manager.batch_size} # how many data sample from DatasetServer per time.
+  batch_size: ${rollout_manager.batch_size}
   num_prefetchers: 1
   data_prefetcher:
     distributed:
       resources:
         num_cpus: 1
-  num_trainers: 1 # equals to number of GPUs by default
-  # control the frequency of remote parameter update
+  num_trainers: ${slurm_config.num_gpus}
   update_interval: 1
   gpu_preload: False
   trainer:
     distributed:
       resources:
-        num_cpus: 1
+        num_cpus: 2
         num_gpus: 1
         resources:
           - ["node:${distributed.nodes.master.ip}",0.01]
@@ -157,8 +155,8 @@ training_manager:
     critic_lr: 5.e-4
     opti_eps: 1.e-5
     weight_decay: 0.0
-    lr_decay: False            #update_linear_schedule
-    lr_decay_epoch: 2000      #how many rollout steps till zero
+    lr_decay: False
+    lr_decay_epoch: 2000
 
 data_server:
   distributed:
@@ -172,7 +170,6 @@ data_server:
     sample_max_usage: 1
     rate_limiter_cfg:
       min_size: ${training_manager.batch_size}
-      # r_w_ratio: 10.0
   read_timeout: 1
 
 policy_server:
@@ -183,34 +180,45 @@ policy_server:
         - ["node:${distributed.nodes.master.ip}",0.01]
 
 populations:
-  - population_id: default # population_id
+  - population_id: default
     algorithm:
       name: "MAPPO"
       model_config:
-        model: "gr_football.basic_mat"       # model type
-        backbone:
-          num_agents: 10 # number of training agents
-          embed_dim: 128
-          num_blocks: 2
-          num_heads: 4
-          encode_state: False
-        actor:
-          dec_actor: False
-          share_actor: False
-        critic:
+        model: "gr_football.basic"
         initialization:
           use_orthogonal: True
           gain: 1.
+        actor:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
+        critic:
+          network: mlp
+          layers:
+            - units: 256
+              activation: ReLU
+            - units: 128
+              activation: ReLU
+            - units: 64
+              activation: ReLU
+          output:
+            activation: False
 
-      # set hyper parameter
       custom_config:
         FE_cfg:
-          num_players: 22    #config sent to the Feature Encoder
+          num_players: 22
         gamma: 0.995
-        use_cuda: False  # enable cuda or not
+        use_cuda: False
         use_q_head: False
         ppo_epoch: 10
-        num_mini_batch: 1  # the number of mini-batches
+        num_mini_batch: 1
 
         return_mode: new_gae
         gae:
@@ -220,7 +228,6 @@ populations:
           clip_pg_rho_threshold: 100.0
 
         use_rnn: False
-        # this is not used, instead it is fixed to last hidden in actor/critic
         rnn_layer_num: 1
         rnn_data_chunk_length: 16
 
@@ -228,19 +235,30 @@ populations:
         use_popart: True
         popart_beta: 0.99999
 
-        entropy_coef: 0.0
+        entropy_coef: 0.00
         clip_param: 0.2
-        max_grad_norm: 10
-        # kl_early_stop: 0.01
-
         use_modified_mappo: False
 
+        # LLM-guided entropy masking with per-player penalties and hard-rule enforcement
+        use_llm_mask: True
+        llm_mask_warmup: True
+        llm_mask_high_thresh: 0.7
+        llm_mask_low_thresh: 0.3
+        llm_mask_penalty_scale: 0.3
+        llm_mask_warmup_epochs: 0
+        llm_mask_num_samples: 3
+        llm_mask_sample_temperature: 0.4
+
       policy_init_cfg:
-        agent_0: # agent_id
+        agent_0:
           new_policy_ctr_start: -1
           init_cfg:
-            - condition: "==0" # condition if True in order
-              strategy: random # now support pretrained, inherit_last, random
+            - condition: "==0"
+              strategy: random
+              policy_id:
+              policy_dir:
+            - condition: ">0"
+              strategy: inherit_last
               policy_id:
               policy_dir:
           initial_policies:
@@ -248,8 +266,8 @@ populations:
         agent_1:
           new_policy_ctr_start: -1
           init_cfg:
-            - condition: "==0" # condition if True in order
-              strategy: pretrained # now support pretrained, inherit_last, random
-              policy_id: built_in_5
-              policy_dir: light_malib/trained_models/gr_football/5_vs_5/built_in
+            - condition: "==0"
+              strategy: pretrained
+              policy_id: built_in
+              policy_dir: light_malib/trained_models/gr_football/11_vs_11/built_in
           initial_policies:
