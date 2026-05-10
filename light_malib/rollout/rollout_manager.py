@@ -214,8 +214,8 @@ class RolloutManager:
                 ray.get(self.traning_manager.train_step.remote())
                 
         except Exception as e:
-            # save model
-            self.save_current_model("{}.exception".format(rollout_epoch))
+            # save model (self.rollout_epoch: local rollout_epoch unset if stopper breaks before first increment)
+            self.save_current_model("{}.exception".format(self.rollout_epoch))
             self.save_best_model_from_policy_server()
             Logger.error(traceback.format_exc())
             raise e
@@ -224,16 +224,19 @@ class RolloutManager:
             f"save the last model(average reward:{reward},average win:{win})"
         )
         # save the last model
-        self.save_current_model("{}.last".format(rollout_epoch))
+        self.save_current_model("{}.last".format(self.rollout_epoch))
         
         self.stop_rollout()
 
         # save the best model
         best_policy_desc = self.save_best_model_from_policy_server()
-        # also push to remote to replace the last policy
-        best_policy_desc.policy_id = self.policy_id
-        best_policy_desc.version = float("inf")  # a version for freezing
-        ray.get(self.policy_server.push.remote(self.id, best_policy_desc))
+        if best_policy_desc is not None:
+            # also push to remote to replace the last policy
+            best_policy_desc.policy_id = self.policy_id
+            best_policy_desc.version = float("inf")  # a version for freezing
+            ray.get(self.policy_server.push.remote(self.id, best_policy_desc))
+        else:
+            Logger.warning("Skipped final best-policy push (no policy available).")
 
         # signal tranining_manager to stop training
         ray.get(self.traning_manager.stop_training.remote())
@@ -282,6 +285,8 @@ class RolloutManager:
             with self.rollout_epoch_lock:
                 self.rollout_epoch = self.cfg.get('resume_epoch', 0)
             best_reward = -np.inf
+            reward = 0.0
+            win = 0.0
             self.rollout_metrics = Metrics(self.cfg.rollout_metric_cfgs)
             while True:
                 # TODO(jh): ...
@@ -331,8 +336,8 @@ class RolloutManager:
                 self.check_error([_async_training_loop])
 
         except Exception as e:
-            # save model
-            self.save_current_model("{}.exception".format(rollout_epoch))
+            # save model (self.rollout_epoch: local rollout_epoch unset if stopper breaks before first increment)
+            self.save_current_model("{}.exception".format(self.rollout_epoch))
             self.save_best_model_from_policy_server()
             Logger.error(traceback.format_exc())
             raise e
@@ -341,14 +346,17 @@ class RolloutManager:
             f"save the last model(average reward:{reward},average win:{win})"
         )
         # save the last model
-        self.save_current_model("{}.last".format(rollout_epoch))
+        self.save_current_model("{}.last".format(self.rollout_epoch))
 
         # save the best model
         best_policy_desc = self.save_best_model_from_policy_server()
-        # also push to remote to replace the last policy
-        best_policy_desc.policy_id = self.policy_id
-        best_policy_desc.version = float("inf")  # a version for freezing
-        ray.get(self.policy_server.push.remote(self.id, best_policy_desc))
+        if best_policy_desc is not None:
+            # also push to remote to replace the last policy
+            best_policy_desc.policy_id = self.policy_id
+            best_policy_desc.version = float("inf")  # a version for freezing
+            ray.get(self.policy_server.push.remote(self.id, best_policy_desc))
+        else:
+            Logger.warning("Skipped final best-policy push (no policy available).")
 
         # signal tranining_manager to stop training
         ray.get(self.traning_manager.stop_training.remote())
@@ -495,18 +503,23 @@ class RolloutManager:
                     self.id, agent_id, policy_id, old_version=None
                 )
             )
-            self.agents[agent_id].policy_data[policy_id] = policy_desc
-        else:
-            old_policy_desc = self.agents[agent_id].policy_data[policy_id]
-            policy_desc = ray.get(
-                self.policy_server.pull.remote(
-                    self.id, agent_id, policy_id, old_version=old_policy_desc.version
-                )
-            )
+            # Never cache None (e.g. ".best" before any push); avoids corrupt state on retry.
             if policy_desc is not None:
                 self.agents[agent_id].policy_data[policy_id] = policy_desc
-            else:
-                policy_desc = old_policy_desc
+            return policy_desc
+        old_policy_desc = self.agents[agent_id].policy_data[policy_id]
+        if old_policy_desc is None:
+            del self.agents[agent_id].policy_data[policy_id]
+            return self.pull_policy(agent_id, policy_id)
+        policy_desc = ray.get(
+            self.policy_server.pull.remote(
+                self.id, agent_id, policy_id, old_version=old_policy_desc.version
+            )
+        )
+        if policy_desc is not None:
+            self.agents[agent_id].policy_data[policy_id] = policy_desc
+        else:
+            policy_desc = old_policy_desc
         return policy_desc
 
     def save_current_model(self, name):
@@ -556,9 +569,26 @@ class RolloutManager:
         ray.get(self.policy_server.push.remote(self.id, best_policy_desc))
         
     def save_best_model_from_policy_server(self):
-        best_policy_desc = self.pull_policy(self.agent_id, f"{self.policy_id}.best")
-        self.save_model(best_policy_desc.policy, self.agent_id, self.policy_id, "best")
-        return best_policy_desc
+        """Save best checkpoint. If server has no `.best` yet (crash before first improvement
+        or no rollout beat best_reward), fall back to current policy weights.
+        """
+        best_key = f"{self.policy_id}.best"
+        best_policy_desc = self.pull_policy(self.agent_id, best_key)
+        if best_policy_desc is not None and getattr(best_policy_desc, "policy", None) is not None:
+            self.save_model(best_policy_desc.policy, self.agent_id, self.policy_id, "best")
+            return best_policy_desc
+
+        Logger.warning(
+            "No `.best` policy on server yet; saving current policy as `best` "
+            "(early exit, exception, or no rollout improved best_reward)."
+        )
+        self.pull_policy(self.agent_id, self.policy_id)
+        cur = self.agents[self.agent_id].policy_data.get(self.policy_id)
+        if cur is None or getattr(cur, "policy", None) is None:
+            Logger.error("Cannot save best: current policy is missing.")
+            return None
+        self.save_model(cur.policy, self.agent_id, self.policy_id, "best")
+        return PolicyDesc(self.agent_id, best_key, cur.policy, version=cur.version)
         
     def get_batch(
         self,

@@ -244,15 +244,21 @@ def rollout_func(
     for agent_id, (policy_id, policy) in behavior_policies.items():
         feature_encoders[agent_id] = policy.feature_encoder
         policy_ids[agent_id] = policy_id
-        if eval:
-            policy.eval()   # disables LLM mask for clean win-rate measurement
+        if eval or agent_id != rollout_desc.agent_id:
+            # Eval mode: disable LLM mask for clean win-rate measurement.
+            # Opponent during training: also eval so the opponent's mask never
+            # fires and doesn't corrupt the training agent's observations/rewards.
+            policy.eval()
         else:
-            policy.train()  # enables LLM mask during training rollouts
+            policy.train()  # enables LLM mask only for the training agent
 
     custom_reset_config = {
         "feature_encoders": feature_encoders,
         "main_agent_id": rollout_desc.agent_id,
         "rollout_length": rollout_length,
+        # Passed to GRFLLMMaskWrapper so it knows the current epoch and eval mode.
+        "rollout_epoch": kwargs.get("rollout_epoch", 0),
+        "eval": eval,
     }
 
     step_data = env_reset(env,behavior_policies,custom_reset_config)
@@ -294,7 +300,8 @@ def rollout_func(
             step_data,
             select_fields(
                 policy_outputs,
-                [EpisodeKey.ACTION, EpisodeKey.ACTION_LOG_PROB, EpisodeKey.STATE_VALUE],
+                [EpisodeKey.ACTION, EpisodeKey.ACTION_LOG_PROB, EpisodeKey.STATE_VALUE,
+                 EpisodeKey.LLM_PENALTY],
             ),
         )
 
@@ -378,7 +385,9 @@ def rollout_func(
                     "stats": stats,
                 }
             results.append(result)
-            
+            if eval:
+                break
+
             # reset env
             step_data = env_reset(env,behavior_policies,custom_reset_config)
     
@@ -393,4 +402,3 @@ def rollout_func(
 
     results={"results":results}            
     return results
-

@@ -17,7 +17,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import wandb
+
 
 class Monitor:
     """
@@ -32,6 +32,7 @@ class Monitor:
         self.writer = SummaryWriter(log_dir=cfg.expr_log_dir)
 
         if self.monitor_type == 'remote':
+            import wandb
             wandb.init(
                 project=f'{cfg.expr_group}-{cfg.expr_name}',
                 config = cfg
@@ -46,6 +47,7 @@ class Monitor:
         if self.monitor_type == 'local':
             self.writer.add_scalar(tag, scalar_value, global_step, *args, **kwargs)
         elif self.monitor_type == 'remote':
+            import wandb
             wandb.log({tag: scalar_value,
                        })
 
@@ -58,6 +60,7 @@ class Monitor:
             if self.monitor_type == 'local':
                 self.writer.add_scalar(tag, scalar_value, global_step, *args, **kwargs)
             elif self.monitor_type == 'remote':
+                import wandb
                 wandb.log({tag: scalar_value})
 
 
@@ -66,6 +69,7 @@ class Monitor:
         if self.monitor_type == 'local':
             self.writer.add_scalars(main_tag, tag_scalar_dict, global_step, *args, **kwargs)
         elif self.monitor_type == 'remote':
+            import wandb
             log_dict = {}
             for tag, scalar in tag_scalar_dict.items():
                 log_dict[f'{main_tag}_{tag}'] = scalar
@@ -81,7 +85,9 @@ class Monitor:
 
     def close(self):
         self.writer.close()
-        wandb.finish()
+        if self.monitor_type == 'remote':
+            import wandb
+            wandb.finish()
 
 
 def array_to_rgb(writer, tag, array, xpid, ypid, steps, color="bwr", mode='local',**kwargs):
@@ -110,6 +116,7 @@ def array_to_rgb(writer, tag, array, xpid, ypid, steps, color="bwr", mode='local
     if mode == 'local':
         writer.add_image(tag, img, steps)
     elif mode == 'remote':
+        import wandb
         wandb.log({tag: plt})
     else:
         Logger.warning("monitor mode is not implemented")

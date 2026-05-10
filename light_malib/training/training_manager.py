@@ -109,7 +109,19 @@ class TrainingManager:
         ))
 
         self.eq_dist_list = []
-        
+
+        # Must exist before any rollout that might finish without calling train_step()
+        # (e.g. stopper fires immediately when resume_epoch >= max_steps); otherwise
+        # stop_training() crashes with missing stop_flag_lock.
+        self._ensure_stop_sync()
+
+    def _ensure_stop_sync(self):
+        """Lazy-init stop flag/lock so early stop_training() never crashes (stale deploys)."""
+        if not hasattr(self, "stop_flag_lock"):
+            self.stop_flag_lock = threading.Lock()
+        if not hasattr(self, "stop_flag"):
+            self.stop_flag = False
+
     def train(self, training_desc: TrainingDesc):
         # create table
         self.table_name = default_table_name(
@@ -164,9 +176,10 @@ class TrainingManager:
             stopped=self.train_step()
         
     def get_traininig_loop(self):
-        self.stop_flag = False
-        self.stop_flag_lock = threading.Lock()
-              
+        self._ensure_stop_sync()
+        with self.stop_flag_lock:
+            self.stop_flag = False
+
         prefetching_desc = PrefetchingDesc(self.table_name, self.cfg.batch_size)
         prefetching_descs = [prefetching_desc]
         self.prefetching_task_refs = [
@@ -250,6 +263,7 @@ class TrainingManager:
         yield True
 
     def stop_training(self):
+        self._ensure_stop_sync()
         with self.stop_flag_lock:
             self.stop_flag = True
 

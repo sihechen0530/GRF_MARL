@@ -75,6 +75,10 @@ def main():
         "--no-ci", action="store_true",
         help="Disable confidence interval shading"
     )
+    parser.add_argument(
+        "--interval", type=int, default=100,
+        help="Resample all curves to this epoch interval (default: 100)"
+    )
     args = parser.parse_args()
 
     if args.labels is not None and len(args.labels) != len(args.runs):
@@ -95,22 +99,36 @@ def main():
         "goal_mean": "Mean Goals",
     }[args.metric]
 
+    # Load all runs first to determine shared epoch range
+    loaded = []
+    for run_dir, label in zip(args.runs, labels):
+        df = load_eval_results(run_dir)
+        if df is not None:
+            loaded.append((label, df))
+
+    if not loaded:
+        print("[ERROR] No valid eval results found in any of the provided run directories.")
+        sys.exit(1)
+
+    max_epoch = min(df["epoch"].max() for _, df in loaded)
+    grid = np.arange(args.interval, max_epoch + 1, args.interval)
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
     plotted = 0
-    for run_dir, label in zip(args.runs, labels):
-        df = load_eval_results(run_dir)
-        if df is None:
-            continue
+    for label, df in loaded:
+        # Crop to shared range then interpolate onto the common grid
+        df = df[df["epoch"] <= max_epoch]
+        values = np.interp(grid, df["epoch"].values, df[args.metric].values)
+        if ci_col in df.columns:
+            cis = np.interp(grid, df["epoch"].values, df[ci_col].values)
+        else:
+            cis = np.zeros_like(values)
 
-        epochs = df["epoch"].values
-        values = df[args.metric].values
-        cis = df[ci_col].values if ci_col in df.columns else np.zeros_like(values)
-
-        line, = ax.plot(epochs, values, marker="o", linewidth=1.5, markersize=4, label=label)
+        line, = ax.plot(grid, values, marker="o", linewidth=1.5, markersize=4, label=label)
 
         if not args.no_ci:
-            ax.fill_between(epochs, values - cis, values + cis,
+            ax.fill_between(grid, values - cis, values + cis,
                             alpha=0.15, color=line.get_color())
         plotted += 1
 

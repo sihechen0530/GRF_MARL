@@ -53,6 +53,7 @@ from light_malib.rollout.rollout_func import rollout_func
 from light_malib.utils.desc.task_desc import RolloutDesc
 from light_malib.utils.cfg import load_cfg
 from light_malib.utils.logger import Logger
+from light_malib.utils.random import set_random_seed
 
 
 def discover_checkpoints(run_dir, agent_id="agent_0", epoch_interval=None, filter_names=None):
@@ -116,14 +117,17 @@ def discover_checkpoints(run_dir, agent_id="agent_0", epoch_interval=None, filte
 
 def _worker_eval(args):
     """Worker function: each process creates its own env + policies and runs games."""
-    worker_id, ckpt_dir, opponent_dir, env_cfg, rollout_length, games_for_worker = args
+    worker_id, ckpt_dir, opponent_dir, env_cfg, rollout_length, games_for_worker, base_seed = args
+
+    worker_seed = int(base_seed) + worker_id
+    set_random_seed(worker_seed)
 
     policy_0 = MAPPO.load(ckpt_dir, env_agent_id="agent_0")
     policy_1 = MAPPO.load(opponent_dir, env_agent_id="agent_1")
     policy_0.eval()
     policy_1.eval()
 
-    env = GRFootballEnv(worker_id, None, env_cfg)
+    env = GRFootballEnv(worker_id, worker_seed, env_cfg)
     rollout_desc = RolloutDesc("agent_0", None, None, None, None, None)
     behavior_policies = {
         "agent_0": ("policy_0", policy_0),
@@ -153,10 +157,11 @@ def _worker_eval(args):
 def evaluate_checkpoint(ckpt_dir, cfg, opponent_dir, num_games, rollout_length, num_workers=1):
     """Run num_games episodes across num_workers parallel processes."""
     env_cfg = cfg.rollout_manager.worker.envs[0]
+    eval_seed = int(getattr(cfg, "seed", 0)) * 100000 + int(getattr(cfg.rollout_manager, "seed", 0))
     # Pass env_cfg as-is so GRFootballEnv gets attribute access (e.g. .reward_config)
 
     if num_workers <= 1:
-        return _worker_eval((0, ckpt_dir, opponent_dir, env_cfg, rollout_length, num_games))
+        return _worker_eval((0, ckpt_dir, opponent_dir, env_cfg, rollout_length, num_games, eval_seed))
 
     # Distribute games evenly across workers
     base, extra = divmod(num_games, num_workers)
@@ -164,7 +169,7 @@ def evaluate_checkpoint(ckpt_dir, cfg, opponent_dir, num_games, rollout_length, 
     for i in range(num_workers):
         n = base + (1 if i < extra else 0)
         if n > 0:
-            worker_args.append((i, ckpt_dir, opponent_dir, env_cfg, rollout_length, n))
+            worker_args.append((i, ckpt_dir, opponent_dir, env_cfg, rollout_length, n, eval_seed))
 
     all_stats = []
     ctx = get_context("spawn")

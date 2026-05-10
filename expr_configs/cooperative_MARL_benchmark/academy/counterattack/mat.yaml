@@ -31,7 +31,7 @@ framework:
     type: "win_rate_stopper"
     kwargs:
       min_win_rate: 1.1
-      max_steps: 1100          #iteration at each psro round
+      max_steps: 2000          #iteration at each psro round
 agent_manager:
   num_agents: 2
   share_policies: False
@@ -191,8 +191,8 @@ populations:
         backbone:
           num_agents: 10 # number of training agents
           embed_dim: 128
-          num_blocks: 1
-          num_heads: 1
+          num_blocks: 2
+          num_heads: 4
           encode_state: False
         actor:
           dec_actor: False
@@ -210,7 +210,7 @@ populations:
         use_cuda: False  # enable cuda or not
         use_q_head: False
         ppo_epoch: 10
-        num_mini_batch: 4  # the number of mini-batches
+        num_mini_batch: 1  # the number of mini-batches
 
         return_mode: new_gae
         gae:

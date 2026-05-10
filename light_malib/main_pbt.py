@@ -70,8 +70,19 @@ def start_cluster(use_distributed: bool = False):
         # Local (single-node / SLURM) mode: always start a fresh cluster.
         # Use a random port to avoid collisions with other jobs sharing the same node
         # (port 6379 is Ray's default and would be claimed by the first job).
+        # Cap object store to 70% of /dev/shm so Ray doesn't hit the "equals shm size" error.
+        import shutil
+        try:
+            shm_bytes = shutil.disk_usage("/dev/shm").total
+            object_store_memory = int(shm_bytes * 0.7)
+        except FileNotFoundError:
+            object_store_memory = int(20 * 1024 ** 3)  # 20 GB fallback
         ray.shutdown()
-        cluster_start_info = ray.init(resources={}, _temp_dir=f"/tmp/ray_{os.getpid()}")
+        cluster_start_info = ray.init(
+            resources={},
+            _temp_dir=f"/tmp/ray_{os.getpid()}",
+            object_store_memory=object_store_memory,
+        )
 
     Logger.warning(
         "============== Cluster Info ==============\n{}".format(cluster_start_info)

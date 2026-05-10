@@ -33,6 +33,10 @@ Usage:
         --config expr_configs/cooperative_MARL_benchmark/academy/3_vs_1_with_keeper/mappo.yaml \
         --checkpoint logs/.../agent_0/default-1/best \
         --num_episodes 3 --mode frames --output_dir videos/3v1_mappo
+
+    # Only save winning episodes (roll until 2 wins, cap 120 tries)
+    python scripts/render_episodes.py ... \
+        --num_episodes 2 --wins-only --max-attempts 120 --mode frames --output_dir videos/wins
 """
 
 import argparse
@@ -53,6 +57,18 @@ sys.path.insert(0, BASE_DIR)
 from light_malib.algorithm.mappo.policy import MAPPO
 from light_malib.utils.cfg import load_cfg
 from light_malib.utils.logger import Logger
+
+
+def _safe_video_prefix(prefix: str) -> str:
+    """Allow e.g. 'baseline_' or 'llm' for filenames; strip path separators."""
+    p = (prefix or "").strip()
+    if not p:
+        return ""
+    for bad in (os.sep, "\\", ":"):
+        p = p.replace(bad, "_")
+    if not p.endswith("_"):
+        p += "_"
+    return p
 
 
 def discover_checkpoints(run_dir, agent_id="agent_0", epoch_interval=None):
@@ -164,11 +180,25 @@ def render_with_gfr_video(cfg, checkpoint_dir, opponent_dir, num_episodes, outpu
     Logger.info(f"Videos saved to: {output_dir}")
 
 
-def render_with_frames(cfg, checkpoint_dir, opponent_dir, num_episodes, output_dir, fps=10):
+def render_with_frames(
+    cfg,
+    checkpoint_dir,
+    opponent_dir,
+    num_episodes,
+    output_dir,
+    fps=10,
+    wins_only=False,
+    max_attempts=80,
+    video_prefix="",
+):
     """
     Capture RGB frames from GRF observations and assemble into MP4.
     Requires `render=True` in env config so frames appear in observations,
     but uses opencv to write the video file.
+
+    If wins_only: roll until num_episodes wins are saved as win_000.mp4, ...
+    (non-win attempts are not written). max_attempts caps total tries.
+    video_prefix: prepended to output mp4 names (e.g. 'baseline' -> baseline_win_000.mp4).
     """
     try:
         import cv2
@@ -198,10 +228,29 @@ def render_with_frames(cfg, checkpoint_dir, opponent_dir, num_episodes, output_d
     rollout_length = cfg.rollout_manager.worker.eval_rollout_length
     n_left = scenario_config["number_of_left_players_agent_controls"]
     n_right = scenario_config["number_of_right_players_agent_controls"]
+    pfx = _safe_video_prefix(video_prefix)
 
     wins = []
-    for ep in range(num_episodes):
-        Logger.info(f"Recording episode {ep + 1}/{num_episodes}...")
+    saved_wins = 0
+    attempt = 0
+    while True:
+        attempt += 1
+        if wins_only:
+            if saved_wins >= num_episodes:
+                break
+            if attempt > max_attempts:
+                Logger.error(
+                    f"wins-only: got {saved_wins} win(s) after {max_attempts} attempts "
+                    f"(need {num_episodes}). Raise --max-attempts or pick a stronger checkpoint."
+                )
+                sys.exit(1)
+            Logger.info(
+                f"Attempt {attempt}/{max_attempts} (saving win {saved_wins + 1}/{num_episodes})..."
+            )
+        else:
+            if attempt > num_episodes:
+                break
+            Logger.info(f"Recording episode {attempt}/{num_episodes}...")
 
         raw_env = gfootball_create_env(**scenario_config)
         observations = raw_env.reset()
@@ -275,12 +324,21 @@ def render_with_frames(cfg, checkpoint_dir, opponent_dir, num_episodes, output_d
         win = 1 if my_score > opp_score else 0
         outcome = "WIN" if my_score > opp_score else ("LOSS" if my_score < opp_score else "DRAW")
         wins.append(win)
-        Logger.info(f"  Episode {ep + 1}: {outcome} ({my_score}-{opp_score}, {len(frames)} frames)")
+        Logger.info(f"  Result: {outcome} ({my_score}-{opp_score}, {len(frames)} frames)")
 
         raw_env.close()
 
+        if wins_only and not win:
+            Logger.info("  (not a win — discarding, no file written)")
+            continue
+
         if frames:
-            video_path = os.path.join(output_dir, f"episode_{ep:03d}_{outcome.lower()}.mp4")
+            if wins_only:
+                video_path = os.path.join(output_dir, f"{pfx}win_{saved_wins:03d}.mp4")
+            else:
+                video_path = os.path.join(
+                    output_dir, f"{pfx}episode_{attempt - 1:03d}_{outcome.lower()}.mp4"
+                )
             h, w, _ = frames[0].shape
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
@@ -288,11 +346,18 @@ def render_with_frames(cfg, checkpoint_dir, opponent_dir, num_episodes, output_d
                 writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
             writer.release()
             Logger.info(f"  Saved: {video_path}")
+            if wins_only:
+                saved_wins += 1
         else:
-            Logger.warning(f"  No frames captured for episode {ep + 1}. "
-                           "Make sure 'render=True' is supported by your GRF build.")
+            Logger.warning(
+                "  No frames captured for this attempt. "
+                "Make sure 'render=True' is supported by your GRF build."
+            )
 
-    Logger.info(f"\nWin rate: {np.mean(wins):.1%} ({sum(wins)}/{len(wins)})")
+    if wins:
+        Logger.info(f"\nWin rate over attempts: {np.mean(wins):.1%} ({sum(wins)}/{len(wins)})")
+    if wins_only:
+        Logger.info(f"wins-only: saved {saved_wins} video(s) under {output_dir}")
     Logger.info(f"Videos saved to: {output_dir}")
 
 
@@ -333,10 +398,24 @@ def _collect_native_videos(episode_logdir, output_dir, ep_index):
     return copied
 
 
-def render_with_rollout_func(cfg, checkpoint_dir, opponent_dir, num_episodes, output_dir, save_dumps):
+def render_with_rollout_func(
+    cfg,
+    checkpoint_dir,
+    opponent_dir,
+    num_episodes,
+    output_dir,
+    save_dumps,
+    wins_only=False,
+    max_attempts=80,
+    video_prefix="",
+):
     """
     Use the project's own rollout_func with GRF's native video writer.
     Simpler and more reliable than frame capture, but requires a display.
+
+    wins_only: keep rolling until num_episodes wins are collected; copy only winning
+    episode videos as win_000.mp4, ... Non-win attempt dirs are removed.
+    video_prefix: final mp4 names become {prefix}win_000.mp4 (see _safe_video_prefix).
     """
     from light_malib.envs.gr_football.env import GRFootballEnv
     from light_malib.rollout.rollout_func import rollout_func
@@ -354,9 +433,33 @@ def render_with_rollout_func(cfg, checkpoint_dir, opponent_dir, num_episodes, ou
         "agent_1": ("policy_1", policy_1),
     }
 
+    pfx = _safe_video_prefix(video_prefix)
     wins = []
-    for ep in range(num_episodes):
-        episode_logdir = os.path.abspath(os.path.join(output_dir, f"episode_{ep:03d}"))
+    saved_wins = 0
+    attempt = 0
+
+    while True:
+        attempt += 1
+        if wins_only:
+            if saved_wins >= num_episodes:
+                break
+            if attempt > max_attempts:
+                Logger.error(
+                    f"wins-only: got {saved_wins} win(s) after {max_attempts} attempts "
+                    f"(need {num_episodes}). Raise --max-attempts or pick a stronger checkpoint."
+                )
+                sys.exit(1)
+            Logger.info(
+                f"Attempt {attempt}/{max_attempts} (saving win {saved_wins + 1}/{num_episodes})..."
+            )
+            ep_tag = f"attempt_{attempt:04d}"
+        else:
+            if attempt > num_episodes:
+                break
+            Logger.info(f"Recording episode {attempt}/{num_episodes}...")
+            ep_tag = f"episode_{attempt - 1:03d}"
+
+        episode_logdir = os.path.abspath(os.path.join(output_dir, ep_tag))
         os.makedirs(episode_logdir, exist_ok=True)
 
         env_cfg = copy.deepcopy(cfg.rollout_manager.worker.envs[0])
@@ -366,8 +469,7 @@ def render_with_rollout_func(cfg, checkpoint_dir, opponent_dir, num_episodes, ou
         env_cfg.scenario_config.write_full_episode_dumps = save_dumps
         env_cfg.scenario_config.logdir = episode_logdir
 
-        env = GRFootballEnv(ep, None, env_cfg)
-        Logger.info(f"Recording episode {ep + 1}/{num_episodes}...")
+        env = GRFootballEnv(attempt, None, env_cfg)
 
         rollout_results = rollout_func(
             eval=True,
@@ -381,17 +483,53 @@ def render_with_rollout_func(cfg, checkpoint_dir, opponent_dir, num_episodes, ou
             rollout_epoch=100,
         )
 
+        win_val = 0
         for result in rollout_results["results"]:
             stats = result["stats"]["agent_0"]
             outcome = "WIN" if stats["win"] == 1 else ("LOSS" if stats["lose"] == 1 else "DRAW")
-            wins.append(stats["win"])
-            Logger.info(f"  Episode {ep + 1}: {outcome} "
-                        f"(goals: {stats['my_goal']}, reward: {stats['reward']:.2f})")
+            win_val = int(stats["win"])
+            wins.append(win_val)
+            Logger.info(
+                f"  Result: {outcome} (goals: {stats['my_goal']}, reward: {stats['reward']:.2f})"
+            )
 
         env._env.close()
 
-        # Copy any video/dump written by GRF into output_dir for predictable names
-        copied = _collect_native_videos(episode_logdir, output_dir, ep)
+        # Unique scratch index for wins_only so episode_*.mp4 in output_dir never collide
+        scratch_idx = (attempt - 1) if not wins_only else (500 + attempt)
+        copied = _collect_native_videos(episode_logdir, output_dir, scratch_idx)
+
+        if wins_only and not win_val:
+            Logger.info("  (not a win — discarding scratch video, removing attempt dir)")
+            for p in copied:
+                try:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                except OSError:
+                    pass
+            shutil.rmtree(episode_logdir, ignore_errors=True)
+            continue
+
+        if wins_only and win_val:
+            mp4s = [p for p in copied if p.endswith(".mp4")]
+            if mp4s:
+                dst = os.path.join(output_dir, f"{pfx}win_{saved_wins:03d}.mp4")
+                try:
+                    shutil.move(mp4s[0], dst)
+                    Logger.info(f"  Saved: {dst}")
+                except OSError as e:
+                    Logger.warning(f"  Could not move {mp4s[0]} -> {dst}: {e}")
+                for extra in mp4s[1:]:
+                    try:
+                        os.remove(extra)
+                    except OSError:
+                        pass
+                saved_wins += 1
+            else:
+                Logger.warning("  Win but no mp4 collected; try --mode frames")
+            shutil.rmtree(episode_logdir, ignore_errors=True)
+            continue
+
         if copied:
             Logger.info(f"  Native output: {copied}")
         else:
@@ -403,12 +541,14 @@ def render_with_rollout_func(cfg, checkpoint_dir, opponent_dir, num_episodes, ou
                 )
             except OSError:
                 Logger.warning(
-                    f"  No video/dump files produced for episode {ep + 1}. "
+                    f"  No video/dump files produced for attempt {attempt}. "
                     "Try --mode frames to capture video via OpenCV."
                 )
 
     if wins:
-        Logger.info(f"\nWin rate: {np.mean(wins):.1%} ({sum(int(w) for w in wins)}/{len(wins)})")
+        Logger.info(f"\nWin rate over attempts: {np.mean(wins):.1%} ({sum(int(w) for w in wins)}/{len(wins)})")
+    if wins_only:
+        Logger.info(f"wins-only: saved {saved_wins} win clip(s) under {output_dir}")
     Logger.info(f"Videos saved to: {output_dir}")
 
 
@@ -449,6 +589,25 @@ On headless machines, wrap the command with xvfb:
                         help="Only render every Nth epoch checkpoint (when using --run_dir)")
     parser.add_argument("--filter", nargs="*", default=None,
                         help="Filter checkpoint names (e.g. best last epoch_500)")
+    parser.add_argument(
+        "--wins-only",
+        action="store_true",
+        help="Keep sampling until --num-episodes wins are saved (win_000.mp4, ...). "
+        "Non-wins are not written (frames mode) or scratch files removed (native).",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=80,
+        help="With --wins-only, max environment resets before giving up (default: 80).",
+    )
+    parser.add_argument(
+        "--video-prefix",
+        type=str,
+        default="",
+        help="Prefix for saved mp4 names in this run, e.g. 'baseline' or 'llm' -> baseline_win_000.mp4. "
+        "Use when multiple renders share the same --output_dir.",
+    )
     args = parser.parse_args()
 
     if args.checkpoint is None and args.run_dir is None:
@@ -473,7 +632,13 @@ On headless machines, wrap the command with xvfb:
         print("[ERROR] No checkpoints found")
         sys.exit(1)
 
-    print(f"Will render {args.num_episodes} episode(s) for {len(checkpoints)} checkpoint(s)")
+    if args.wins_only:
+        print(
+            f"Will save {args.num_episodes} WIN video(s) per checkpoint "
+            f"(wins-only, max {args.max_attempts} attempts each)"
+        )
+    else:
+        print(f"Will render {args.num_episodes} episode(s) for {len(checkpoints)} checkpoint(s)")
     print(f"Mode: {args.mode}")
     print(f"Output: {args.output_dir}\n")
 
@@ -488,13 +653,27 @@ On headless machines, wrap the command with xvfb:
 
         if args.mode == "native":
             render_with_rollout_func(
-                cfg, ckpt_dir, opponent_dir,
-                args.num_episodes, ckpt_output, args.save_dumps,
+                cfg,
+                ckpt_dir,
+                opponent_dir,
+                args.num_episodes,
+                ckpt_output,
+                args.save_dumps,
+                wins_only=args.wins_only,
+                max_attempts=args.max_attempts,
+                video_prefix=args.video_prefix,
             )
         elif args.mode == "frames":
             render_with_frames(
-                cfg, ckpt_dir, opponent_dir,
-                args.num_episodes, ckpt_output, args.fps,
+                cfg,
+                ckpt_dir,
+                opponent_dir,
+                args.num_episodes,
+                ckpt_output,
+                args.fps,
+                wins_only=args.wins_only,
+                max_attempts=args.max_attempts,
+                video_prefix=args.video_prefix,
             )
 
     print(f"\nAll videos saved to: {args.output_dir}")
